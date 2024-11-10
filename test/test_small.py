@@ -1,0 +1,42 @@
+import subprocess, time, filecmp, os
+import sys, traceback
+from kill_command import kill_command
+import networkx as nx
+
+SMALL_TEST_DIR = "./smalltest_networkx"
+SOL_PATH = "../SequentialDinics.cpp"
+
+for file_name in os.listdir(SMALL_TEST_DIR):
+    file_path = os.path.join(SMALL_TEST_DIR, file_name)
+    if os.path.isdir(file_path):
+        print("="*20)
+        print(f"Testing {file_name}")
+        for test_files in os.listdir(file_path):
+            test_file_path = os.path.join(file_path, test_files)
+            if os.path.isfile(test_file_path):
+                try:
+                    # load the graph
+                    G = nx.read_edgelist(test_file_path, nodetype=int, data=[('capacity', int)])
+                    source = 0
+                    sink = len(G.nodes()) - 1
+                    flow_value, flow_dict = nx.maximum_flow(G, source, sink)
+                    print(flow_value)
+
+                    # run the solution
+                    # compare the values
+                except Exception as e:
+                    print(f"Test {test_files} failed")
+                    print(traceback.format_exception(*sys.exc_info()))
+                    exit(1)
+
+# flow_value, flow_dict = nx.maximum_flow(G, source, sink)
+
+# # Output the results
+# print("Generated Random Network:")
+# print("Nodes:", G.nodes())
+# print("Edges with capacities:")
+# for (u, v, capacity) in G.edges(data='capacity'):
+#     print(f"Edge ({u} -> {v}) with capacity {capacity}")
+
+# print("\nMaximum Flow:", flow_value)
+# print("Flow Distribution:", flow_dict)
