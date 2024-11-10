@@ -1,10 +1,14 @@
 import subprocess, time, filecmp, os
 import sys, traceback
-from kill_command import kill_command
 import networkx as nx
 
 SMALL_TEST_DIR = "./smalltest_networkx"
 SOL_PATH = "../SequentialDinics.cpp"
+
+# compile the solution
+if os.path.exists("sol"):
+    subprocess.run(["rm", "sol"])
+subprocess.run(["g++", SOL_PATH, "-o", "sol"])
 
 for file_name in os.listdir(SMALL_TEST_DIR):
     file_path = os.path.join(SMALL_TEST_DIR, file_name)
