@@ -20,12 +20,12 @@ for file_name in os.listdir(SMALL_TEST_DIR):
             if os.path.isfile(test_file_path):
                 try:
                     # load the graph
-                    G = nx.read_edgelist(test_file_path, nodetype=int, data=[('capacity', int)])
-                    source = 0
-                    sink = len(G.nodes()) - 1
+                    with open(test_file_path, 'r') as f:
+                        num_nodes, num_edges = map(int, f.readline().split())
+                        source, sink = map(int, f.readline().split())
+                        G = nx.read_edgelist(f, nodetype=int, data=[('capacity', int)])
                     flow_value, flow_dict = nx.maximum_flow(G, source, sink)
-                    print(flow_value)
-
+                    # print(f"Max flow from {source} to {sink}: {flow_value}")
                     # run the solution
                     # compare the values
                 except Exception as e:
