@@ -24,13 +24,13 @@ def generate_er_test(out_dir, node_num, node_min, node_max, capacity_min, capaci
         G = nx.gnp_random_graph(num_nodes, edge_prob, directed=True)
         for (u, v) in G.edges():
             G.edges[u, v]['capacity'] = random.randint(capacity_min, capacity_max)
-        test_name = str(uuid.uuid4())
-
         num_nodes = G.number_of_nodes()
+        num_edges = G.number_of_edges()
+        test_name = str(num_nodes) + "_" + str(num_edges) + "_" + str(uuid.uuid4())
         source = 0
         sink = random.randint(1, num_nodes - 1)
         with open(f"{out_dir}/er_network/{test_name}.edgelist", 'w') as f:
-            f.write(f"{num_nodes} {G.number_of_edges()}\n")
+            f.write(f"{num_nodes} {num_edges}\n")
             f.write(f"{source} {sink}\n")
             for u, v, data in G.edges(data=True):
                 f.write(f"{u} {v} {data['capacity']}\n")
@@ -45,13 +45,13 @@ def generate_ba_test(out_dir, node_num, node_min, node_max, capacity_min, capaci
         G = G.to_directed()
         for (u, v) in G.edges():
             G.edges[u, v]['capacity'] = random.randint(capacity_min, capacity_max)
-        test_name = str(uuid.uuid4())
-
         num_nodes = G.number_of_nodes()
+        num_edges = G.number_of_edges()
+        test_name = str(num_nodes) + "_" + str(num_edges) + "_" + str(uuid.uuid4())
         source = 0
         sink = random.randint(1, num_nodes - 1)
         with open(f"{out_dir}/ba_network/{test_name}.edgelist", 'w') as f:
-            f.write(f"{num_nodes} {G.number_of_edges()}\n")
+            f.write(f"{num_nodes} {num_edges}\n")
             f.write(f"{source} {sink}\n")
             for u, v, data in G.edges(data=True):
                 f.write(f"{u} {v} {data['capacity']}\n")
@@ -69,13 +69,13 @@ def generate_grid_test(out_dir, node_num, node_min, node_max, capacity_min, capa
 
         for (u, v) in G.edges():
             G.edges[u, v]['capacity'] = random.randint(capacity_min, capacity_max)
-        test_name = str(uuid.uuid4())
-
         num_nodes = G.number_of_nodes()
+        num_edges = G.number_of_edges()
+        test_name = str(num_nodes) + "_" + str(num_edges) + "_" + str(uuid.uuid4())
         source = 0
         sink = random.randint(1, num_nodes - 1)
         with open(f"{out_dir}/grid_network/{test_name}.edgelist", 'w') as f:
-            f.write(f"{num_nodes} {G.number_of_edges()}\n")
+            f.write(f"{num_nodes} {num_edges}\n")
             f.write(f"{source} {sink}\n")
             for u, v, data in G.edges(data=True):
                 f.write(f"{u} {v} {data['capacity']}\n")
