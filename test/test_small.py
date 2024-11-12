@@ -3,12 +3,14 @@ import sys, traceback
 import networkx as nx
 
 SMALL_TEST_DIR = "./smalltest_networkx"
-SOL_PATH = "../SequentialDinics.cpp"
+# SOL_PATH = "../SequentialDinics.cpp"
+SOL_PATH = "../OpenMPDinics.cpp"
 
 # compile the solution
 if os.path.exists("sol"):
     subprocess.run(["rm", "sol"])
-subprocess.run(["g++", SOL_PATH, "-o", "sol"])
+
+subprocess.run(["g++", SOL_PATH, "-Wall", "-O3", "-std=c++17", "-m64", "-I.", "-fopenmp", "-Wno-unknown-pragmas", "-o", "sol"])
 
 for file_name in os.listdir(SMALL_TEST_DIR):
     file_path = os.path.join(SMALL_TEST_DIR, file_name)
@@ -26,7 +28,10 @@ for file_name in os.listdir(SMALL_TEST_DIR):
                         G = nx.read_edgelist(f, nodetype=int, data=[('capacity', int)], create_using=nx.DiGraph)
                     flow_value, flow_dict = nx.maximum_flow(G, source, sink)
                     # run the solution
-                    result = subprocess.run(["./sol", test_file_path], capture_output=True)
+                    if SOL_PATH == "../OpenMPDinics.cpp" or SOL_PATH == "../MPIDinics.cpp":
+                        result = subprocess.run(["./sol", test_file_path, "8"], capture_output=True)
+                    else:
+                        result = subprocess.run(["./sol", test_file_path], capture_output=True)
                     result_max_flow = result.stdout.decode().strip().split("\n")[-1].split(": ")[-1]
                     # compare the values
                     if result.returncode != 0:
@@ -46,3 +51,9 @@ for file_name in os.listdir(SMALL_TEST_DIR):
                     print(f"Test {test_files} failed")
                     print(traceback.format_exception(*sys.exc_info()))
                     exit(1)
+
+if os.path.exists("sol"):
+    subprocess.run(["rm", "sol"])
+print("="*20)
+print("All tests passed!")
+print("="*20)
