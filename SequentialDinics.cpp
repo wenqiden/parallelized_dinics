@@ -1,5 +1,6 @@
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <bits/stdc++.h>
 using namespace std;
 
@@ -84,22 +85,26 @@ int main(int argc, char* argv[]) {
       return 1;
     }
 
-    
+    ifstream networkfile(argv[1]);
+    if (!networkfile.is_open()) {
+      cerr << "Error opening file" << endl;
+      return 1;
+    }
 
+    int nodes, edges, source, sink;
 
-    int n, m;
-    cin >> n >> m;
-    Dinic dinic(n);
+    networkfile >> nodes >> edges;
 
-    for (int i = 0; i < m; ++i) {
-        int u, v, capacity;
-        cin >> u >> v >> capacity;
+    Dinic dinic(nodes);
+
+    networkfile >> source >> sink;
+    networkfile.ignore();
+
+    int u, v, capacity;
+    while (networkfile >> u >> v >> capacity) {
         dinic.addEdge(u, v, capacity);
     }
 
-    int source, sink;
-    cin >> source >> sink;
-
-    cout << "Maximum Flow: " << dinic.maxFlow(source, sink) << endl;
+    cout << dinic.maxFlow(source, sink) << endl;
     return 0;
 }
