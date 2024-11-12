@@ -1,5 +1,6 @@
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <bits/stdc++.h>
 #include <chrono> // Include the chrono library for timing
 using namespace std;
