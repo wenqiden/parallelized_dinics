@@ -27,16 +27,17 @@ for file_name in os.listdir(SMALL_TEST_DIR):
                     flow_value, flow_dict = nx.maximum_flow(G, source, sink)
                     # run the solution
                     result = subprocess.run(["./sol", test_file_path], capture_output=True)
+                    result_max_flow = result.stdout.decode().strip().split("\n")[-1].split(": ")[-1]
                     # compare the values
                     if result.returncode != 0:
                         print(f"Test {test_files} failed")
                         print("Return code is not 0")
                         print(result.stderr.decode())
                         exit(1)
-                    elif str(result.stdout.decode()).strip() != str(flow_value).strip():
+                    elif result_max_flow != str(flow_value):
                         print(f"Test {test_files} failed")
                         print(f"Expected: {flow_value}")
-                        print(f"Got: {result.stdout.decode()}")
+                        print(f"Got: {result_max_flow}")
                         print("Graph:", G.edges(data=True))
                         exit(1)
                     else:
@@ -45,4 +46,3 @@ for file_name in os.listdir(SMALL_TEST_DIR):
                     print(f"Test {test_files} failed")
                     print(traceback.format_exception(*sys.exc_info()))
                     exit(1)
-                    
