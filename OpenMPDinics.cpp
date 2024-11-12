@@ -2,10 +2,12 @@
 #include <fstream>
 #include <bits/stdc++.h>
 #include <chrono> // Include the chrono library for timing
+#include <omp.h>
 using namespace std;
 using namespace std::chrono;
 
 const int INF = 1e9;
+int num_threads;
 
 // Structure to represent edges
 struct Edge {
@@ -32,22 +34,48 @@ public:
         adj[v].push_back(b);
     }
 
-    bool bfs(int source, int sink) {
+    bool parallel_bfs(int source, int sink) {
         fill(level.begin(), level.end(), -1);
         level[source] = 0;
-        queue<int> q;
-        q.push(source);
 
-        while (!q.empty()) {
-            int u = q.front();
-            q.pop();
-            for (const Edge& e : adj[u]) {
-                if (e.flow < e.capacity && level[e.to] == -1) {
-                    level[e.to] = level[u] + 1;
-                    q.push(e.to);
+        vector<int> current_level, next_level;
+        current_level.push_back(source);
+
+        // Use OpenMP parallel region
+        omp_set_num_threads(num_threads);
+        while (!current_level.empty()) {
+            #pragma omp parallel
+            {
+                vector<int> local_next_level;
+
+                // Parallelize over the current level with dynamic scheduling
+                #pragma omp for schedule(dynamic)
+                for (size_t i = 0; i < current_level.size(); ++i) {
+                    int u = current_level[i];
+                    // Process all edges of vertex `u`
+                    for (size_t j = 0; j < adj[u].size(); ++j) {
+                        const Edge& e = adj[u][j];
+                        // Check if the edge can be used in the level graph
+                        if (e.flow < e.capacity && level[e.to] == -1) {
+                            // Atomically set the level to avoid race conditions
+                            if (__sync_bool_compare_and_swap(&level[e.to], -1, level[u] + 1)) {
+                                local_next_level.push_back(e.to);
+                            }
+                        }
+                    }
                 }
+
+                // Merge local results into the global next_level vector
+                #pragma omp critical
+                next_level.insert(next_level.end(), local_next_level.begin(), local_next_level.end());
             }
+
+            // Swap current_level with next_level and clear next_level
+            current_level.swap(next_level);
+            next_level.clear();
         }
+
+        // Return whether the sink is reachable
         return level[sink] != -1;
     }
 
@@ -69,7 +97,7 @@ public:
 
     int maxFlow(int source, int sink) {
         int flow = 0;
-        while (bfs(source, sink)) {
+        while (parallel_bfs(source, sink)) {
             fill(ptr.begin(), ptr.end(), 0);
             while (int pushed = dfs(source, sink, INF)) {
                 flow += pushed;
@@ -80,8 +108,15 @@ public:
 };
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        cout << "Usage: " << argv[0] << " <input file>" << endl;
+    if (argc < 3) {
+        cout << "Usage: " << argv[0] << " <input file> <num_threads>" << endl;
+        return 1;
+    }
+
+    // Parse the number of threads from the command-line argument
+    num_threads = atoi(argv[2]);
+    if (num_threads <= 0) {
+        cerr << "Error: num_threads must be a positive integer" << endl;
         return 1;
     }
 
@@ -124,7 +159,7 @@ int main(int argc, char* argv[]) {
     double comp_time = duration_cast<nanoseconds>(comp_end - comp_start).count();
     cout << "Computation Time: " << comp_time << " nanoseconds" << endl;
 
-    // Output the maximum flow
+    // Output the maximum flow result
     cout << "Maximum Flow: " << max_flow << endl;
 
     return 0;
