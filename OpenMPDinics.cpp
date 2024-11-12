@@ -1,7 +1,6 @@
 #include <iostream>
-#include <fstream>
 #include <bits/stdc++.h>
-#include <chrono> // Include the chrono library for timing
+#include <chrono>
 #include <omp.h>
 using namespace std;
 using namespace std::chrono;
@@ -18,13 +17,15 @@ struct Edge {
 class Dinic {
 public:
     vector<vector<Edge>> adj;
-    vector<int> level, ptr;
+    vector<int> level, ptr, current_level, next_level;
     int n;
 
     Dinic(int n) : n(n) {
         adj.resize(n);
         level.resize(n);
         ptr.resize(n);
+        current_level.reserve(n);
+        next_level.reserve(n);
     }
 
     void addEdge(int u, int v, int capacity) {
@@ -37,27 +38,20 @@ public:
     bool parallel_bfs(int source, int sink) {
         fill(level.begin(), level.end(), -1);
         level[source] = 0;
-
-        vector<int> current_level, next_level;
+        current_level.clear();
         current_level.push_back(source);
 
-        // Use OpenMP parallel region
-        omp_set_num_threads(num_threads);
         while (!current_level.empty()) {
             #pragma omp parallel
             {
                 vector<int> local_next_level;
 
-                // Parallelize over the current level with dynamic scheduling
-                #pragma omp for schedule(dynamic)
+                #pragma omp for nowait schedule(dynamic)
                 for (size_t i = 0; i < current_level.size(); ++i) {
                     int u = current_level[i];
-                    // Process all edges of vertex `u`
                     for (size_t j = 0; j < adj[u].size(); ++j) {
                         const Edge& e = adj[u][j];
-                        // Check if the edge can be used in the level graph
                         if (e.flow < e.capacity && level[e.to] == -1) {
-                            // Atomically set the level to avoid race conditions
                             if (__sync_bool_compare_and_swap(&level[e.to], -1, level[u] + 1)) {
                                 local_next_level.push_back(e.to);
                             }
@@ -65,17 +59,14 @@ public:
                     }
                 }
 
-                // Merge local results into the global next_level vector
                 #pragma omp critical
                 next_level.insert(next_level.end(), local_next_level.begin(), local_next_level.end());
             }
 
-            // Swap current_level with next_level and clear next_level
             current_level.swap(next_level);
             next_level.clear();
         }
 
-        // Return whether the sink is reachable
         return level[sink] != -1;
     }
 
@@ -107,39 +98,60 @@ public:
     }
 };
 
+// Buffered input for faster reading
+const int BUFFER_SIZE = 1 << 20; // 1 MB buffer
+char buffer[BUFFER_SIZE];
+size_t buffer_pos = 0, buffer_len = 0;
+
+inline char get_char() {
+    if (buffer_pos == buffer_len) {
+        buffer_len = fread(buffer, 1, BUFFER_SIZE, stdin);
+        buffer_pos = 0;
+    }
+    return buffer[buffer_pos++];
+}
+
+inline int fast_read_int() {
+    int x = 0;
+    char c = get_char();
+    while (c < '0' || c > '9') c = get_char(); // Skip non-digit characters
+    while (c >= '0' && c <= '9') {
+        x = x * 10 + (c - '0');
+        c = get_char();
+    }
+    return x;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 3) {
         cout << "Usage: " << argv[0] << " <input file> <num_threads>" << endl;
         return 1;
     }
 
-    // Parse the number of threads from the command-line argument
     num_threads = atoi(argv[2]);
     if (num_threads <= 0) {
         cerr << "Error: num_threads must be a positive integer" << endl;
         return 1;
     }
+    omp_set_num_threads(num_threads);
 
-    // Start measuring initialization time with nanosecond precision
+    // Start measuring initialization time
     auto init_start = high_resolution_clock::now();
 
-    // Read input from the specified file
-    ifstream infile(argv[1]);
-    if (!infile) {
-        cerr << "Error: Could not open file " << argv[1] << endl;
-        return 1;
-    }
+    // Use freopen to redirect stdin to the input file
+    freopen(argv[1], "r", stdin);
 
-    int n, m;
-    infile >> n >> m;
+    int n = fast_read_int();
+    int m = fast_read_int();
     Dinic dinic(n);
 
-    int source, sink;
-    infile >> source >> sink;
+    int source = fast_read_int();
+    int sink = fast_read_int();
 
     for (int i = 0; i < m; ++i) {
-        int u, v, capacity;
-        infile >> u >> v >> capacity;
+        int u = fast_read_int();
+        int v = fast_read_int();
+        int capacity = fast_read_int();
         dinic.addEdge(u, v, capacity);
     }
 
@@ -148,7 +160,7 @@ int main(int argc, char* argv[]) {
     double init_time = duration_cast<nanoseconds>(init_end - init_start).count();
     cout << "Initialization Time: " << init_time << " nanoseconds" << endl;
 
-    // Start measuring computation time with nanosecond precision
+    // Start measuring computation time
     auto comp_start = high_resolution_clock::now();
 
     // Compute the maximum flow
