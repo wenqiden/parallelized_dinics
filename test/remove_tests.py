@@ -3,6 +3,7 @@ import shutil
 
 SMALL_TEST_DIR = "./smalltest_networkx"
 LARGE_TEST_DIR = "./largetest_networkx"
+XLARGE_TEST_DIR = "./extralargetest_networkx"
 
 def clear_test_files(test_dir):
     for filename in os.listdir(test_dir):
@@ -19,3 +20,4 @@ def clear_test_files(test_dir):
 
 clear_test_files(SMALL_TEST_DIR)
 clear_test_files(LARGE_TEST_DIR)
+clear_test_files(XLARGE_TEST_DIR)

@@ -143,6 +143,7 @@ int main(int argc, char* argv[]) {
 
     int n = fast_read_int();
     int m = fast_read_int();
+    
     Dinic dinic(n);
 
     int source = fast_read_int();
