@@ -1,9 +1,6 @@
 # Compiler
 CXX = g++
-CXXFLAGS = -std=c++17 -O2 -Wall -g
-
-# OpenMP flags
-OPENMP_FLAGS = -fopenmp
+CXXFLAGS = -std=c++17 -O3 -Wall -m64 -I. -fopenmp -Wno-unknown-pragmas
 
 # Executable targets
 TARGETS = OpenMPDinic SequentialDinic EdgeOpenMPDinic
@@ -23,27 +20,19 @@ all: $(TARGETS)
 
 # Rule to build the OpenMP version
 OpenMPDinic: $(OBJS_OPENMP)
-	$(CXX) $(CXXFLAGS) $(OPENMP_FLAGS) -o $@ $(OBJS_OPENMP)
+	$(CXX) $(CXXFLAGS) -o OpenMPDinic $(OBJS_OPENMP)
 
 # Rule to build the sequential version
 SequentialDinic: $(OBJS_SEQ)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJS_SEQ)
+	$(CXX) $(CXXFLAGS) -o SequentialDinic $(OBJS_SEQ)
 
 # Rule to build the Edge-based OpenMP version
 EdgeOpenMPDinic: $(OBJS_EDGE)
-	$(CXX) $(CXXFLAGS) $(OPENMP_FLAGS) -o $@ $(OBJS_EDGE)
+	$(CXX) $(CXXFLAGS) -o EdgeOpenMPDinic $(OBJS_EDGE)
 
-# Rule to compile object files for OpenMP
-OpenMPDinics.o: OpenMPDinics.cpp
-	$(CXX) $(CXXFLAGS) $(OPENMP_FLAGS) -c $< -o $@
-
-# Rule to compile object files for sequential
-SequentialDinics.o: SequentialDinics.cpp
+# Rule to compile object files
+%.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-# Rule to compile object files for Edge-based OpenMP
-EdgeOpenMPDinics.o: EdgeOpenMPDinics.cpp
-	$(CXX) $(CXXFLAGS) $(OPENMP_FLAGS) -c $< -o $@
 
 # Clean up object files and the executables
 clean:
