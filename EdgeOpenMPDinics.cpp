@@ -39,29 +39,69 @@ public:
     bool parallel_bfs(int source, int sink) {
         fill(level.begin(), level.end(), -1);
         level[source] = 0;
+
         current_level.clear();
         current_level.push_back(source);
 
         while (!current_level.empty()) {
+            // Step 1: Count the total number of edges and prepare start_idx
+            int total_edges = 0;
+            vector<int> start_idx(current_level.size() + 1, 0);
+
             #pragma omp parallel
             {
-                vector<int> local_next_level;
+                int local_total = 0;
 
-                #pragma omp for nowait schedule(dynamic)
+                #pragma omp for
                 for (size_t i = 0; i < current_level.size(); ++i) {
                     int u = current_level[i];
-                    for (size_t j = 0; j < adj[u].size(); ++j) {
-                        const Edge& e = adj[u][j];
-                        if (e.flow < e.capacity && level[e.to] == -1) {
-                            if (__sync_bool_compare_and_swap(&level[e.to], -1, level[u] + 1)) {
-                                local_next_level.push_back(e.to);
-                            }
-                        }
-                    }
+                    start_idx[i + 1] = adj[u].size();
+                    local_total += adj[u].size();
                 }
 
-                #pragma omp critical
-                next_level.insert(next_level.end(), local_next_level.begin(), local_next_level.end());
+                #pragma omp atomic
+                total_edges += local_total;
+
+                // Prefix sum to convert start_idx to cumulative indices
+                #pragma omp single
+                for (size_t i = 1; i < start_idx.size(); ++i) {
+                    start_idx[i] += start_idx[i - 1];
+                }
+            }
+
+            // If no edges to process, exit the loop
+            if (total_edges == 0) break;
+
+            next_level.clear();
+            vector<vector<int>> local_next_levels(omp_get_max_threads());
+
+            // Step 2: Parallel processing over all edges using a single loop
+            #pragma omp parallel for
+            for (int edge_idx = 0; edge_idx < total_edges; ++edge_idx) {
+                // Find the vertex corresponding to this edge using start_idx
+                int low = 0, high = current_level.size();
+                while (low < high) {
+                    int mid = (low + high) / 2;
+                    if (start_idx[mid + 1] > edge_idx) high = mid;
+                    else low = mid + 1;
+                }
+
+                int u = current_level[low];
+                int local_edge_idx = edge_idx - start_idx[low];
+                const Edge &e = adj[u][local_edge_idx];
+
+                // Check if the edge can be used in the level graph
+                if (e.flow < e.capacity && level[e.to] == -1) {
+                    if (__sync_bool_compare_and_swap(&level[e.to], -1, level[u] + 1)) {
+                        int tid = omp_get_thread_num();
+                        local_next_levels[tid].push_back(e.to);
+                    }
+                }
+            }
+
+            // Merge thread-local next levels into the global next_level
+            for (const auto& local : local_next_levels) {
+                next_level.insert(next_level.end(), local.begin(), local.end());
             }
 
             current_level.swap(next_level);
