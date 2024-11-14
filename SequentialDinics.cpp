@@ -112,11 +112,8 @@ int main(int argc, char* argv[]) {
     }
 
     // Start measuring initialization time
-    // Start measuring initialization time
     auto init_start = high_resolution_clock::now();
 
-    // Use freopen to redirect stdin to the input file
-    if (freopen(argv[1], "r", stdin) == nullptr) {
     // Use freopen to redirect stdin to the input file
     if (freopen(argv[1], "r", stdin) == nullptr) {
         cerr << "Error: Could not open file " << argv[1] << endl;
