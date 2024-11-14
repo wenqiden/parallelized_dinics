@@ -17,7 +17,8 @@ struct Edge {
 class Dinic {
 public:
     vector<vector<Edge>> adj;
-    vector<int> level, ptr;
+    vector<int> level;
+    vector<size_t> ptr;
     int n;
 
     Dinic(int n) : n(n) {
@@ -54,7 +55,7 @@ public:
 
     int dfs(int u, int sink, int pushed) {
         if (u == sink) return pushed;
-        for (int& i = ptr[u]; i < adj[u].size(); ++i) {
+        for (size_t& i = ptr[u]; i < adj[u].size(); ++i) {
             Edge& e = adj[u][i];
             if (e.flow < e.capacity && level[e.to] == level[u] + 1) {
                 int tr = dfs(e.to, sink, min(pushed, e.capacity - e.flow));
