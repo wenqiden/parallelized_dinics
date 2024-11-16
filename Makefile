@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 # Compiler
 CXX = g++
-CXXFLAGS = -std=c++17 -O3 -Wall -m64 -I. # General flags
+CXXFLAGS = -std=c++17 -O3 -Wall -m64 -I. -fopenmp -Wno-unknown-pragmas# General flags
 OPENMP_FLAGS = -fopenmp -Wno-unknown-pragmas # Only for OpenMP programs
 
 # Executable targets
