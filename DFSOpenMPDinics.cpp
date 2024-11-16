@@ -19,26 +19,33 @@ struct Edge {
     std::shared_ptr<std::mutex> edgeLock;
 
     // Constructor
-    Edge(int to, int rev, int capacity, int flow)
-        : to(to), rev(rev), capacity(capacity), flow(flow),
-          edgeLock(std::make_shared<std::mutex>()) {}
+    Edge(int to, int rev, int capacity, int flow, std::shared_ptr<std::mutex> edgeLock)
+        : to(to), rev(rev), capacity(capacity), flow(flow), edgeLock(edgeLock) {}
 };
 
 class Dinic {
 public:
     vector<vector<Edge>> adj;
     vector<int> level;
+    vector<std::unique_ptr<std::atomic<bool>>> deadEnd;
     int n;
 
     Dinic(int n) : n(n) {
         adj.resize(n);
         level.resize(n);
+        deadEnd.resize(n);
+
+        // Initialize all elements of deadEnd to false
+        for (int i = 0; i < n; ++i) {
+            deadEnd[i] = std::make_unique<std::atomic<bool>>(false);
+        }
     }
 
     // Add an edge to the graph
     void addEdge(int u, int v, int capacity) {
-        adj[u].emplace_back(Edge(v, adj[v].size(), capacity, 0));
-        adj[v].emplace_back(Edge(u, adj[u].size() - 1, 0, 0));
+        auto edgeLock = std::make_shared<std::mutex>();
+        adj[u].emplace_back(Edge(v, adj[v].size(), capacity, 0, edgeLock));
+        adj[v].emplace_back(Edge(u, adj[u].size() - 1, 0, 0, edgeLock));
     }
 
     // BFS to build the level graph
@@ -65,45 +72,73 @@ public:
     int parallel_dfs(int u, int sink, int flow) {
         if (u == sink) return flow;
 
+        // Check if this node is already marked as a dead end
+        if (deadEnd[u]->load()) return 0;
+
+        bool allNeighborsDeadEnds = true;
+
         for (size_t i = 0; i < adj[u].size(); ++i) {
             Edge &edge = adj[u][i];
 
-            // Skip if the edge doesn't respect the level graph or has no capacity left
+            // Skip edges that do not respect the level graph or are saturated
             if (level[edge.to] != level[u] + 1 || edge.flow >= edge.capacity)
                 continue;
 
             int remainingCapacity = edge.capacity - edge.flow;
-            int pushedFlow = 0;
 
             // Attempt to acquire the lock using try_lock()
             if (edge.edgeLock->try_lock()) {
                 // Perform DFS on the adjacent node while holding the lock
-                pushedFlow = parallel_dfs(edge.to, sink, min(flow, remainingCapacity));
-                
-                // If we successfully pushed some flow, update the edge flows
+                int pushedFlow = parallel_dfs(edge.to, sink, min(flow, remainingCapacity));
+
                 if (pushedFlow > 0) {
+                    // Update the flow on this edge and its reverse
                     edge.flow += pushedFlow;
                     adj[edge.to][edge.rev].flow -= pushedFlow;
-                    edge.edgeLock->unlock(); // Unlock only after updating the flow
+                    edge.edgeLock->unlock();
                     return pushedFlow;
                 }
 
-                // Unlock if no flow was pushed
+                // Check if the neighbor is not a dead end
+                if (!deadEnd[edge.to]->load()) {
+                    allNeighborsDeadEnds = false;
+                }
+
                 edge.edgeLock->unlock();
+            } else {
+                // If we couldn't acquire the lock, assume the neighbor might not be a dead end
+                allNeighborsDeadEnds = false;
             }
         }
+
+        // Mark as a dead end if all neighbors are confirmed dead ends
+        if (allNeighborsDeadEnds) {
+            deadEnd[u]->store(true);
+        }
+
         return 0;
     }
 
     int maxFlow(int source, int sink) {
         int totalFlow = 0;
         while (bfs(source, sink)) {
-            #pragma omp parallel reduction(+:totalFlow)
+            // Reset all deadEnd flags before starting the DFS phase
+            #pragma omp parallel for
+            for (int i = 0; i < n; ++i) {
+                deadEnd[i]->store(false);
+            }
+
+            #pragma omp parallel
             {
                 int pushed;
-                while ((pushed = parallel_dfs(source, sink, INF)) > 0) {
-                    totalFlow += pushed;
-                }
+                do {
+                    pushed = parallel_dfs(source, sink, INF);
+                    if (pushed > 0) {
+                        // Use atomic addition to safely update totalFlow
+                        #pragma omp atomic
+                        totalFlow += pushed;
+                    }
+                } while (pushed > 0);
             }
         }
         return totalFlow;
