@@ -84,30 +84,31 @@ public:
             if (level[edge.to] != level[u] + 1 || edge.flow >= edge.capacity)
                 continue;
 
-            int remainingCapacity = edge.capacity - edge.flow;
-
             // Attempt to acquire the lock using try_lock()
             if (edge.edgeLock->try_lock()) {
-                // Perform DFS on the adjacent node while holding the lock
-                int pushedFlow = parallel_dfs(edge.to, sink, min(flow, remainingCapacity));
+                int remainingCapacity = edge.capacity - edge.flow;
+                if (remainingCapacity > 0) {
+                    // Perform DFS on the adjacent node while holding the lock
+                    int pushedFlow = parallel_dfs(edge.to, sink, min(flow, remainingCapacity));
 
-                if (pushedFlow > 0) {
-                    // Update the flow on this edge and its reverse
-                    edge.flow += pushedFlow;
-                    adj[edge.to][edge.rev].flow -= pushedFlow;
-                    edge.edgeLock->unlock();
-                    return pushedFlow;
-                }
-
-                // Check if the neighbor is not a dead end
-                if (!deadEnd[edge.to]->load()) {
-                    allNeighborsDeadEnds = false;
+                    if (pushedFlow > 0) {
+                        // Update the flow on this edge and its reverse
+                        edge.flow += pushedFlow;
+                        adj[edge.to][edge.rev].flow -= pushedFlow;
+                        edge.edgeLock->unlock();
+                        return pushedFlow;
+                    }
+                    // Check if the neighbor is not a dead end
+                    if (!deadEnd[edge.to]->load()) {
+                        allNeighborsDeadEnds = false;
+                    }
                 }
 
                 edge.edgeLock->unlock();
             } else {
-                // If we couldn't acquire the lock, assume the neighbor might not be a dead end
-                allNeighborsDeadEnds = false;
+                if (!deadEnd[edge.to]->load()) {
+                    allNeighborsDeadEnds = false;
+                }
             }
         }
 
