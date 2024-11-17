@@ -1,4 +1,4 @@
 test/*
 perf.data
-perf.data*
+perf.data.old
 *.o

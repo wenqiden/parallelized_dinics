@@ -2,23 +2,25 @@ SHELL := /bin/bash
 
 # Compiler
 CXX = g++
-CXXFLAGS = -std=c++17 -O3 -g -Wall -m64 -I. -fopenmp -Wno-unknown-pragmas# General flags
+CXXFLAGS = -std=c++17 -O3 -g -Wall -m64 -I. # General flags
 OPENMP_FLAGS = -fopenmp -Wno-unknown-pragmas # Only for OpenMP programs
 
 # Executable targets
-TARGETS = DFSOpenMPDinic OpenMPDinic SequentialDinic EdgeOpenMPDinic
+TARGETS = LazyDFSOpenMPDinic DFSOpenMPDinic OpenMPDinic SequentialDinic EdgeOpenMPDinic
 
 # Source files
 SRCS_OPENMP = OpenMPDinics.cpp
 SRCS_SEQ = SequentialDinics.cpp
 SRCS_EDGE = EdgeOpenMPDinics.cpp
 SRCS_DFS = DFSOpenMPDinics.cpp
+SRCS_LAZY = LazyDFSOpenMPDinics.cpp
 
 # Object files
 OBJS_OPENMP = $(SRCS_OPENMP:.cpp=.o)
 OBJS_SEQ = $(SRCS_SEQ:.cpp=.o)
 OBJS_EDGE = $(SRCS_EDGE:.cpp=.o)
 OBJS_DFS = $(SRCS_DFS:.cpp=.o)
+OBJS_LAZY = $(SRCS_LAZY:.cpp=.o)
 
 # Default rule to build all programs
 all: $(TARGETS)
@@ -39,6 +41,10 @@ EdgeOpenMPDinic: $(OBJS_EDGE)
 DFSOpenMPDinic: $(OBJS_DFS)
 	$(CXX) $(CXXFLAGS) $(OPENMP_FLAGS) -o DFSOpenMPDinic $(OBJS_DFS)
 
+# Rule to build the DFS-based OpenMP version
+LazyDFSOpenMPDinic: $(OBJS_LAZY)
+	$(CXX) $(CXXFLAGS) $(OPENMP_FLAGS) -o LazyDFSOpenMPDinic $(OBJS_LAZY)
+
 # Rule to compile object files for the sequential program (no OpenMP)
 %.o: %.cpp
 	@if [[ "$<" == *SequentialDinics.cpp ]]; then \
@@ -49,7 +55,7 @@ DFSOpenMPDinic: $(OBJS_DFS)
 
 # Clean up object files and the executables
 clean:
-	rm -f $(OBJS_OPENMP) $(OBJS_SEQ) $(OBJS_EDGE) $(OBJS_DFS) $(TARGETS)
+	rm -f $(OBJS_OPENMP) $(OBJS_SEQ) $(OBJS_EDGE) $(OBJS_DFS) $(OBJS_LAZY) $(TARGETS)
 
 # Phony targets (not real files)
-.PHONY: all clean OpenMPDinic SequentialDinic EdgeOpenMPDinic DFSOpenMPDinic
+.PHONY: all clean OpenMPDinic SequentialDinic EdgeOpenMPDinic DFSOpenMPDinic LazyDFSOpenMPDinic
