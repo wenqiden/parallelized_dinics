@@ -10,7 +10,6 @@ using namespace std;
 using namespace std::chrono;
 
 const int INF = 1e9;
-int num_threads;
 
 // Structure to represent edges
 struct Edge {
@@ -98,17 +97,14 @@ public:
                         edge.edgeLock->unlock();
                         return pushedFlow;
                     }
-                    // Check if the neighbor is not a dead end
-                    if (!deadEnd[edge.to]->load()) {
-                        allNeighborsDeadEnds = false;
-                    }
                 }
 
                 edge.edgeLock->unlock();
-            } else {
-                if (!deadEnd[edge.to]->load()) {
-                    allNeighborsDeadEnds = false;
-                }
+            }
+
+            // Check if the neighbor is not a dead end
+            if (!deadEnd[edge.to]->load()) {
+                allNeighborsDeadEnds = false;
             }
         }
 
@@ -176,7 +172,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    num_threads = atoi(argv[2]);
+    int num_threads = atoi(argv[2]);
     if (num_threads <= 0) {
         cerr << "Error: num_threads must be a positive integer" << endl;
         return 1;

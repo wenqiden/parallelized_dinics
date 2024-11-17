@@ -6,7 +6,6 @@ using namespace std;
 using namespace std::chrono;
 
 const int INF = 1e9;
-int num_threads;
 
 // Structure to represent edges
 struct Edge {
@@ -128,7 +127,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    num_threads = atoi(argv[2]);
+    int num_threads = atoi(argv[2]);
     if (num_threads <= 0) {
         cerr << "Error: num_threads must be a positive integer" << endl;
         return 1;
