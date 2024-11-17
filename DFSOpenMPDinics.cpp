@@ -143,7 +143,7 @@ public:
 };
 
 // Buffered input for faster reading
-const int BUFFER_SIZE = 1 << 20; // 1 MB buffer
+const int BUFFER_SIZE = 1 << 29; // 512 MB buffer
 char buffer[BUFFER_SIZE];
 size_t buffer_pos = 0, buffer_len = 0;
 
