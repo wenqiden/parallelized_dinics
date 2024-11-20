@@ -27,7 +27,7 @@ struct Edge {
 
 struct CompareEdges {
     bool operator()(Edge* a, Edge* b) {
-        return (*a->accessCount).load() > (*b->accessCount).load(); // Min-heap: prioritize edges with lower access count
+        return a->accessCount->load() > b->accessCount->load(); // Min-heap: prioritize edges with lower access count
     }
 };
 
@@ -85,16 +85,20 @@ public:
 
         bool allNeighborsDeadEnds = true;
 
-        // Create a temporary vector of pointers to edges
-        vector<Edge*> sortedEdges;
+        // Use a priority queue to sort the edges by access count
+        priority_queue<Edge*, vector<Edge*>, CompareEdges> pq;
+
+        // Add all edges from adj[u] to the priority queue
         for (Edge& edge : adj[u]) {
-            sortedEdges.push_back(&edge);
+            pq.push(&edge);
         }
 
-        // Sort the temporary vector by accessCount
-        sort(sortedEdges.begin(), sortedEdges.end(), [](Edge* a, Edge* b) {
-            return a->accessCount->load() < b->accessCount->load();
-        });
+        // Extract edges from the priority queue into a sorted vector
+        vector<Edge*> sortedEdges;
+        while (!pq.empty()) {
+            sortedEdges.push_back(pq.top());
+            pq.pop();
+        }
 
         // Traverse edges in the order of their access count
         for (Edge* edge : sortedEdges) {
