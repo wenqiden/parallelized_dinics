@@ -2,6 +2,7 @@ import networkx as nx
 import os
 import random
 import uuid
+from scipy.io import mmread
 
 NUM_TO_GENERATE = 1
 EDGE_PROB_MIN = 0.95
@@ -24,6 +25,12 @@ XLARGE_NODE_MAX = 4096
 EXTREME_TEST_DIR = "./extremelargetest_networkx"
 EXTREME_NODE_MIN = 4096
 EXTREME_NODE_MAX = 8192
+
+IMPOSSIBLE_TEST_DIR = "./impossibletest_networkx"
+IMPOSSIBLE_NODE_MIN = 8192
+IMPOSSIBLE_NODE_MAX = 16384
+
+DELTAUNAY_TEST_DIR = "./delaunaytest_networkx"
 
 def generate_er_test(out_dir, node_num, node_min, node_max, capacity_min, capacity_max):
     for _ in range(node_num):
@@ -90,6 +97,21 @@ def generate_grid_test(out_dir, node_num, node_min, node_max, capacity_min, capa
             for u, v, data in G.edges(data=True):
                 f.write(f"{u} {v} {data['capacity']}\n")
 
+def generate_delaunay_single_test(G, file_name, capacity_min, capacity_max):
+    for (u, v) in G.edges():
+        G.edges[u, v]['capacity'] = random.randint(capacity_min, capacity_max)
+    
+    num_nodes = G.number_of_nodes()
+    num_edges = G.number_of_edges()
+    test_name = file_name
+    source = 0
+    sink = random.randint(1, num_nodes - 1)
+    with open(f"{DELTAUNAY_TEST_DIR}/{file_name}/{test_name}.edgelist", 'w') as f:
+        f.write(f"{num_nodes} {num_edges}\n")
+        f.write(f"{source} {sink}\n")
+        for u, v, data in G.edges(data=True):
+            f.write(f"{u} {v} {data['capacity']}\n")
+
 
 def generate_small_tests():
     generate_er_test(SMALL_TEST_DIR, NUM_TO_GENERATE, SMALL_NODE_MIN, SMALL_NODE_MAX, CAPACITY_MIN, CAPACITY_MAX)
@@ -110,6 +132,64 @@ def generate_extreme_tests():
     generate_er_test(EXTREME_TEST_DIR, NUM_TO_GENERATE, EXTREME_NODE_MIN, EXTREME_NODE_MAX, CAPACITY_MIN, CAPACITY_MAX)
     generate_ba_test(EXTREME_TEST_DIR, NUM_TO_GENERATE, EXTREME_NODE_MIN, EXTREME_NODE_MAX, CAPACITY_MIN, CAPACITY_MAX)
     generate_grid_test(EXTREME_TEST_DIR, NUM_TO_GENERATE, EXTREME_NODE_MIN, EXTREME_NODE_MAX, CAPACITY_MIN, CAPACITY_MAX)
+
+def generate_impossible_tests():
+    generate_er_test(IMPOSSIBLE_TEST_DIR, NUM_TO_GENERATE, IMPOSSIBLE_NODE_MIN, IMPOSSIBLE_NODE_MAX, CAPACITY_MIN, CAPACITY_MAX)
+    generate_ba_test(IMPOSSIBLE_TEST_DIR, NUM_TO_GENERATE, IMPOSSIBLE_NODE_MIN, IMPOSSIBLE_NODE_MAX, CAPACITY_MIN, CAPACITY_MAX)
+    generate_grid_test(IMPOSSIBLE_TEST_DIR, NUM_TO_GENERATE, IMPOSSIBLE_NODE_MIN, IMPOSSIBLE_NODE_MAX, CAPACITY_MIN, CAPACITY_MAX)
+
+def generate_delaunay_tests():
+    for file_name in os.listdir(DELTAUNAY_TEST_DIR):
+        file_path = os.path.join(DELTAUNAY_TEST_DIR, file_name)
+        print(f"Generating tests for {file_name}")
+        if os.path.isdir(file_path):
+            edgelist_file = None
+            for test_files in os.listdir(file_path):
+                test_file_path = os.path.join(file_path, test_files)
+                if os.path.isfile(test_file_path) and test_files.endswith(".edgelist"):
+                    edgelist_file = test_file_path
+                    break
+            if edgelist_file is not None:
+                continue
+            mtx_file = None
+            for test_files in os.listdir(file_path):
+                test_file_path = os.path.join(file_path, test_files)
+                if os.path.isfile(test_file_path) and test_files.endswith(".mtx"):
+                    mtx_file = test_file_path
+                    break
+            if mtx_file is None:
+                continue
+
+            try:
+                matrix = mmread(mtx_file).tocoo()
+                G = nx.DiGraph()
+                for row, col in zip(matrix.row, matrix.col):
+                    if row != col:
+                        G.add_edge(col, row)
+            except Exception as e:
+                print(f"Failed to read {mtx_file}")
+                G = nx.DiGraph()
+                # try to load it line by line
+                with open(mtx_file, 'r') as f:
+                    lines = f.readlines()
+                    G = nx.DiGraph()
+                    for line in lines[3:]:
+                        try:
+                            u, v = map(int, line.split())
+                            if u != v:
+                                G.add_edge(u, v)
+                                G.add_edge(v, u)
+                        except:
+                            try:
+                                u = int(line.split()[0].strip())
+                                v = int(line.split()[1].strip())
+                                if u != v:
+                                    G.add_edge(u, v)
+                                    G.add_edge(v, u)
+                            except:
+                                continue
+            generate_delaunay_single_test(G, file_name, CAPACITY_MIN, CAPACITY_MAX)
+            
 
 if not os.path.exists(SMALL_TEST_DIR):
     os.makedirs(SMALL_TEST_DIR)
@@ -135,7 +215,19 @@ if not os.path.exists(EXTREME_TEST_DIR):
     os.makedirs(f"{EXTREME_TEST_DIR}/ba_network")
     os.makedirs(f"{EXTREME_TEST_DIR}/grid_network")
 
-generate_small_tests()
-generate_large_tests()
-generate_xlarge_tests()
-generate_extreme_tests()
+
+if not os.path.exists(IMPOSSIBLE_TEST_DIR):
+    os.makedirs(IMPOSSIBLE_TEST_DIR)
+    os.makedirs(f"{IMPOSSIBLE_TEST_DIR}/er_network")
+    os.makedirs(f"{IMPOSSIBLE_TEST_DIR}/ba_network")
+    os.makedirs(f"{IMPOSSIBLE_TEST_DIR}/grid_network")
+
+if not os.path.exists(DELTAUNAY_TEST_DIR):
+    os.makedirs(DELTAUNAY_TEST_DIR)
+
+# generate_small_tests()
+# generate_large_tests()
+# generate_xlarge_tests()
+# generate_extreme_tests()
+generate_impossible_tests()
+# generate_delaunay_tests()

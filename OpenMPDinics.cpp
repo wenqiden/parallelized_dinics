@@ -42,33 +42,58 @@ public:
         current_level.push_back(source);
 
         while (!current_level.empty()) {
-           #pragma omp parallel
+            #pragma omp parallel
             {
-                #pragma omp single
-                {
-                    for (size_t i = 0; i < current_level.size(); ++i) {
-                        #pragma omp task firstprivate(i)
-                        {
-                            vector<int> local_next_level;
-                            int u = current_level[i];
-                            for (size_t j = 0; j < adj[u].size(); ++j) {
-                                const Edge& e = adj[u][j];
-                                if (e.flow < e.capacity && level[e.to] == -1) {
-                                    if (__sync_bool_compare_and_swap(&level[e.to], -1, level[u] + 1)) {
-                                        local_next_level.push_back(e.to);
-                                    }
-                                }
+                vector<int> local_next_level;
+
+                #pragma omp for nowait schedule(dynamic)
+                for (size_t i = 0; i < current_level.size(); ++i) {
+                    int u = current_level[i];
+                    for (size_t j = 0; j < adj[u].size(); ++j) {
+                        const Edge& e = adj[u][j];
+                        if (e.flow < e.capacity && level[e.to] == -1) {
+                            if (__sync_bool_compare_and_swap(&level[e.to], -1, level[u] + 1)) {
+                                local_next_level.push_back(e.to);
                             }
-                            #pragma omp critical
-                            next_level.insert(next_level.end(), local_next_level.begin(), local_next_level.end());
                         }
                     }
                 }
+                #pragma omp critical
+                next_level.insert(next_level.end(), local_next_level.begin(), local_next_level.end());
             }
 
             current_level.swap(next_level);
             next_level.clear();
         }
+
+        // while (!current_level.empty()) {
+        //    #pragma omp parallel
+        //     {
+        //         #pragma omp single
+        //         {
+        //             for (size_t i = 0; i < current_level.size(); ++i) {
+        //                 #pragma omp task firstprivate(i)
+        //                 {
+        //                     vector<int> local_next_level;
+        //                     int u = current_level[i];
+        //                     for (size_t j = 0; j < adj[u].size(); ++j) {
+        //                         const Edge& e = adj[u][j];
+        //                         if (e.flow < e.capacity && level[e.to] == -1) {
+        //                             if (__sync_bool_compare_and_swap(&level[e.to], -1, level[u] + 1)) {
+        //                                 local_next_level.push_back(e.to);
+        //                             }
+        //                         }
+        //                     }
+        //                     #pragma omp critical
+        //                     next_level.insert(next_level.end(), local_next_level.begin(), local_next_level.end());
+        //                 }
+        //             }
+        //         }
+        //     }
+
+        //     current_level.swap(next_level);
+        //     next_level.clear();
+        // }
 
         return level[sink] != -1;
     }
@@ -102,7 +127,7 @@ public:
 };
 
 // Buffered input for faster reading
-const int BUFFER_SIZE = 1 << 29; // 512 MB buffer
+const int BUFFER_SIZE = 1 << 30; // 1 GB buffer
 char buffer[BUFFER_SIZE];
 size_t buffer_pos = 0, buffer_len = 0;
 
