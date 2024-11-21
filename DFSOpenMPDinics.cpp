@@ -75,6 +75,7 @@ public:
         if (deadEnd[u]->load()) return 0;
 
         bool allNeighborsDeadEnds = true;
+        bool lockContentionOccurred = false;
 
         for (size_t i = 0; i < adj[u].size(); ++i) {
             Edge &edge = adj[u][i];
@@ -95,11 +96,14 @@ public:
                         edge.flow += pushedFlow;
                         adj[edge.to][edge.rev].flow -= pushedFlow;
                         edge.edgeLock->unlock();
-                        return pushedFlow;
+                        return pushedFlow; // Successfully pushed flow
                     }
                 }
 
                 edge.edgeLock->unlock();
+            } else {
+                // Mark lock contention
+                lockContentionOccurred = true;
             }
 
             // Check if the neighbor is not a dead end
@@ -113,7 +117,12 @@ public:
             deadEnd[u]->store(true);
         }
 
-        return 0;
+        // If no flow was pushed and there was lock contention, return -1
+        if (lockContentionOccurred && !allNeighborsDeadEnds) {
+            return -1;
+        }
+
+        return 0; // No flow pushed and no contention
     }
 
     int maxFlow(int source, int sink) {
@@ -125,17 +134,23 @@ public:
                 deadEnd[i]->store(false);
             }
 
+            // Perform the DFS phase to compute the blocking flow
             #pragma omp parallel
             {
+                bool retry;
                 int pushed;
+
                 do {
+                    retry = false;
+
                     pushed = parallel_dfs(source, sink, INF);
                     if (pushed > 0) {
-                        // Use atomic addition to safely update totalFlow
                         #pragma omp atomic
                         totalFlow += pushed;
+                    } else if (pushed == -1) {
+                        retry = true; // Retry if lock contention occurred
                     }
-                } while (pushed > 0);
+                } while (pushed > 0 || retry); // Thread continues until no contention or flow
             }
         }
         return totalFlow;
