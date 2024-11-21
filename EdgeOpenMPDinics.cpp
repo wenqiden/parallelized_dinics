@@ -1,5 +1,6 @@
 #include <iostream>
-#include <bits/stdc++.h>
+#include <vector>
+#include <queue>
 #include <chrono>
 #include <omp.h>
 using namespace std;
@@ -7,32 +8,25 @@ using namespace std::chrono;
 
 const int INF = 1e9;
 
-// Structure to represent edges
-struct Edge {
-    int to, rev;
-    int capacity, flow;
-};
-
 class Dinic {
 public:
-    vector<vector<Edge>> adj;
-    vector<int> level, current_level, next_level;
-    vector<size_t> ptr;
+    vector<vector<int>> capacity;  // Adjacency matrix for capacities
+    vector<vector<int>> flow;      // Adjacency matrix for flows
+    vector<int> level;             // Level graph
+    vector<int> current_level;     // For BFS levels
+    vector<int> next_level;        // For BFS levels in the next step
+    vector<int> ptr;               // Current pointer for DFS
     int n;
 
     Dinic(int n) : n(n) {
-        adj.resize(n);
+        capacity.assign(n, vector<int>(n, 0));
+        flow.assign(n, vector<int>(n, 0));
         level.resize(n);
         ptr.resize(n);
-        current_level.reserve(n);
-        next_level.reserve(n);
     }
 
-    void addEdge(int u, int v, int capacity) {
-        Edge a = {v, (int)adj[v].size(), capacity, 0};
-        Edge b = {u, (int)adj[u].size(), 0, 0};
-        adj[u].push_back(a);
-        adj[v].push_back(b);
+    void addEdge(int u, int v, int cap) {
+        capacity[u][v] += cap;  // Add capacity to adjacency matrix
     }
 
     bool parallel_bfs(int source, int sink) {
@@ -43,68 +37,51 @@ public:
         current_level.push_back(source);
 
         while (!current_level.empty()) {
-            // Step 1: Count the total number of edges and prepare start_idx
-            int total_edges = 0;
-            vector<int> start_idx(current_level.size() + 1, 0);
-
-            #pragma omp parallel
-            {
-                int local_total = 0;
-
-                #pragma omp for
-                for (size_t i = 0; i < current_level.size(); ++i) {
-                    int u = current_level[i];
-                    start_idx[i + 1] = adj[u].size();
-                    local_total += adj[u].size();
-                }
-
-                #pragma omp atomic
-                total_edges += local_total;
-
-                // Prefix sum to convert start_idx to cumulative indices
-                #pragma omp single
-                for (size_t i = 1; i < start_idx.size(); ++i) {
-                    start_idx[i] += start_idx[i - 1];
-                }
-            }
-
-            // If no edges to process, exit the loop
-            if (total_edges == 0) break;
-
+            // Prepare for the next level
             next_level.clear();
             vector<vector<int>> local_next_levels(omp_get_max_threads());
 
-            // Step 2: Parallel processing over all edges using a single loop
+            int total_work = current_level.size() * n;
+
+            // Process edges in parallel
             #pragma omp parallel for
-            for (int edge_idx = 0; edge_idx < total_edges; ++edge_idx) {
-                // Find the vertex corresponding to this edge using start_idx
-                int low = 0, high = current_level.size();
-                while (low < high) {
-                    int mid = (low + high) / 2;
-                    if (start_idx[mid + 1] > edge_idx) high = mid;
-                    else low = mid + 1;
-                }
+            for (int idx = 0; idx < total_work; ++idx) {
+                int u = current_level[idx/n];
+                int v = idx % n;
 
-                int u = current_level[low];
-                int local_edge_idx = edge_idx - start_idx[low];
-                const Edge &e = adj[u][local_edge_idx];
 
-                // Check if the edge can be used in the level graph
-                if (e.flow < e.capacity && level[e.to] == -1) {
-                    if (__sync_bool_compare_and_swap(&level[e.to], -1, level[u] + 1)) {
+                // Check if we can use the edge u -> v
+                if (capacity[u][v] > flow[u][v] && level[v] == -1) {
+                    // Atomically set level[v] to level[u] + 1 if it's still -1
+                    if (__sync_bool_compare_and_swap(&level[v], -1, level[u] + 1)) {
                         int tid = omp_get_thread_num();
-                        local_next_levels[tid].push_back(e.to);
+                        local_next_levels[tid].push_back(v);
                     }
                 }
             }
 
             // Merge thread-local next levels into the global next_level
-            for (const auto& local : local_next_levels) {
-                next_level.insert(next_level.end(), local.begin(), local.end());
+            int total_size = 0;
+            vector<int> offsets(local_next_levels.size() + 1, 0);
+
+            // Step 1: Calculate total size and offsets
+            for (size_t i = 0; i < local_next_levels.size(); ++i) {
+                offsets[i + 1] = offsets[i] + local_next_levels[i].size();
+            }
+            total_size = offsets.back();  // The total size is the last offset
+
+            // Preallocate memory for next_level
+            next_level.resize(total_size);
+
+            // Step 2: Copy data in parallel
+            #pragma omp parallel for
+            for (size_t i = 0; i < local_next_levels.size(); ++i) {
+                const auto& local = local_next_levels[i];
+                std::copy(local.begin(), local.end(), next_level.begin() + offsets[i]);
             }
 
+            // Move to the next level
             current_level.swap(next_level);
-            next_level.clear();
         }
 
         return level[sink] != -1;
@@ -112,13 +89,12 @@ public:
 
     int dfs(int u, int sink, int pushed) {
         if (u == sink) return pushed;
-        for (size_t& i = ptr[u]; i < adj[u].size(); ++i) {
-            Edge& e = adj[u][i];
-            if (e.flow < e.capacity && level[e.to] == level[u] + 1) {
-                int tr = dfs(e.to, sink, min(pushed, e.capacity - e.flow));
+        for (int& v = ptr[u]; v < n; ++v) {
+            if (level[v] == level[u] + 1 && flow[u][v] < capacity[u][v]) {
+                int tr = dfs(v, sink, min(pushed, capacity[u][v] - flow[u][v]));
                 if (tr > 0) {
-                    e.flow += tr;
-                    adj[e.to][e.rev].flow -= tr;
+                    flow[u][v] += tr;
+                    flow[v][u] -= tr;
                     return tr;
                 }
             }
@@ -127,14 +103,14 @@ public:
     }
 
     int maxFlow(int source, int sink) {
-        int flow = 0;
+        int total_flow = 0;
         while (parallel_bfs(source, sink)) {
             fill(ptr.begin(), ptr.end(), 0);
             while (int pushed = dfs(source, sink, INF)) {
-                flow += pushed;
+                total_flow += pushed;
             }
         }
-        return flow;
+        return total_flow;
     }
 };
 
