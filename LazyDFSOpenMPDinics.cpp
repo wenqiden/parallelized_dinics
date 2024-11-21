@@ -136,18 +136,26 @@ public:
     int lock_and_update_flow(vector<Edge*>& path) {
         int pushedFlow = INF;
 
-        // Try to lock each edge in the path one by one
+        // // Try to lock each edge in the path one by one
+        // for (size_t i = 0; i < path.size(); ++i) {
+        //     if (!path[i]->edgeLock->try_lock()) {
+        //         // If we fail to lock, release all previously acquired locks
+        //         for (size_t j = 0; j < i; ++j) {
+        //             path[j]->edgeLock->unlock();
+        //         }
+        //         // Decrement access count for all edges in the path
+        //         for (Edge* edge : path) {
+        //             (*edge->accessCount)--;
+        //         }
+        //         return 0;
+        //     }
+        // }
+
+        // Spin to acquire each lock in the path one by one
         for (size_t i = 0; i < path.size(); ++i) {
-            if (!path[i]->edgeLock->try_lock()) {
-                // If we fail to lock, release all previously acquired locks
-                for (size_t j = 0; j < i; ++j) {
-                    path[j]->edgeLock->unlock();
-                }
-                // Decrement access count for all edges in the path
-                for (Edge* edge : path) {
-                    (*edge->accessCount)--;
-                }
-                return 0;
+            while (!path[i]->edgeLock->try_lock()) {
+                // Busy wait until the lock is acquired
+                // (Consider adding a small sleep or backoff for fairness if needed)
             }
         }
 
