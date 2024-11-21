@@ -87,7 +87,14 @@ public:
             if (edge.edgeLock->try_lock()) {
                 int remainingCapacity = edge.capacity - edge.flow;
                 if (remainingCapacity > 0) {
-                    // Perform DFS on the adjacent node while holding the lock
+                    // int pushedFlow = 0;
+                    // // Perform DFS on the adjacent node while holding the lock
+                    // #pragma omp task shared(pushedFlow)  // Task parallelism
+                    // {
+                    //     pushedFlow = parallel_dfs(edge.to, sink, min(flow, remainingCapacity));
+                    // }
+
+                    // #pragma omp taskwait  // Synchronization
                     int pushedFlow = parallel_dfs(edge.to, sink, min(flow, remainingCapacity));
 
                     if (pushedFlow > 0) {
@@ -143,7 +150,7 @@ public:
 };
 
 // Buffered input for faster reading
-const int BUFFER_SIZE = 1 << 29; // 512 MB buffer
+const int BUFFER_SIZE = 1 << 30; // 1 GB buffer
 char buffer[BUFFER_SIZE];
 size_t buffer_pos = 0, buffer_len = 0;
 
