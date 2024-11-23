@@ -5,6 +5,10 @@
 using namespace std;
 using namespace std::chrono;
 
+#pragma omp declare reduction(vec_merge: std::vector<int>: \
+    std::move(omp_out).insert(omp_out.end(), omp_in.begin(), omp_in.end())) \
+    initializer(omp_priv = decltype(omp_orig)())
+
 const int INF = 1e9;
 
 // Structure to represent edges
@@ -38,32 +42,32 @@ public:
     bool parallel_bfs(int source, int sink) {
         fill(level.begin(), level.end(), -1);
         level[source] = 0;
+
         current_level.clear();
         current_level.push_back(source);
 
         while (!current_level.empty()) {
-            #pragma omp parallel
-            {
-                vector<int> local_next_level;
+            // Prepare for the next level
+            next_level.clear();
 
-                #pragma omp for nowait schedule(dynamic)
-                for (size_t i = 0; i < current_level.size(); ++i) {
-                    int u = current_level[i];
-                    for (size_t j = 0; j < adj[u].size(); ++j) {
-                        const Edge& e = adj[u][j];
-                        if (e.flow < e.capacity && level[e.to] == -1) {
-                            if (__sync_bool_compare_and_swap(&level[e.to], -1, level[u] + 1)) {
-                                local_next_level.push_back(e.to);
-                            }
+            // Process edges in parallel
+            #pragma omp parallel for schedule(dynamic) reduction(vec_merge: next_level)
+            for (size_t i = 0; i < current_level.size(); ++i) {
+                int u = current_level[i];
+                for (size_t j = 0; j < adj[u].size(); ++j) {
+                    const Edge& e = adj[u][j];
+                    // Check if we can use the edge
+                    if (e.flow < e.capacity && level[e.to] == -1) {
+                        // Atomically set level[e.to] to level[u] + 1 if it's still -1
+                        if (__sync_bool_compare_and_swap(&level[e.to], -1, level[u] + 1)) {
+                            next_level.push_back(e.to);
                         }
                     }
                 }
-                #pragma omp critical
-                next_level.insert(next_level.end(), local_next_level.begin(), local_next_level.end());
             }
 
+            // Move to the next level
             current_level.swap(next_level);
-            next_level.clear();
         }
 
         // while (!current_level.empty()) {

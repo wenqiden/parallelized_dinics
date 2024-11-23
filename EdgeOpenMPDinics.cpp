@@ -6,6 +6,10 @@
 using namespace std;
 using namespace std::chrono;
 
+#pragma omp declare reduction(vec_merge: std::vector<int>: \
+    std::move(omp_out).insert(omp_out.end(), omp_in.begin(), omp_in.end())) \
+    initializer(omp_priv = decltype(omp_orig)())
+
 const int INF = 1e9;
 
 class Dinic {
@@ -39,45 +43,20 @@ public:
         while (!current_level.empty()) {
             // Prepare for the next level
             next_level.clear();
-            vector<vector<int>> local_next_levels(omp_get_max_threads());
-
-            int total_work = current_level.size() * n;
 
             // Process edges in parallel
-            #pragma omp parallel for
-            for (int idx = 0; idx < total_work; ++idx) {
+            #pragma omp parallel for schedule(dynamic, 100000) reduction(vec_merge: next_level)
+            for (size_t idx = 0; idx < current_level.size() * n; ++idx) {
                 int u = current_level[idx/n];
                 int v = idx % n;
-
 
                 // Check if we can use the edge u -> v
                 if (capacity[u][v] > flow[u][v] && level[v] == -1) {
                     // Atomically set level[v] to level[u] + 1 if it's still -1
                     if (__sync_bool_compare_and_swap(&level[v], -1, level[u] + 1)) {
-                        int tid = omp_get_thread_num();
-                        local_next_levels[tid].push_back(v);
+                        next_level.push_back(v); // Reduction merges into next_level
                     }
                 }
-            }
-
-            // Merge thread-local next levels into the global next_level
-            int total_size = 0;
-            vector<int> offsets(local_next_levels.size() + 1, 0);
-
-            // Step 1: Calculate total size and offsets
-            for (size_t i = 0; i < local_next_levels.size(); ++i) {
-                offsets[i + 1] = offsets[i] + local_next_levels[i].size();
-            }
-            total_size = offsets.back();  // The total size is the last offset
-
-            // Preallocate memory for next_level
-            next_level.resize(total_size);
-
-            // Step 2: Copy data in parallel
-            #pragma omp parallel for
-            for (size_t i = 0; i < local_next_levels.size(); ++i) {
-                const auto& local = local_next_levels[i];
-                std::copy(local.begin(), local.end(), next_level.begin() + offsets[i]);
             }
 
             // Move to the next level
