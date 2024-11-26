@@ -43,75 +43,156 @@ public:
         return vertex / vertices_per_process;
     }
 
-    // Parallel BFS using MPI for level graph construction
     bool parallel_bfs(int source, int sink) {
-        fill(level.begin(), level.end(), -1);
-        level[source] = 0;
+        fill(level.begin(), level.end(), -1); // Reset levels
+        level[source] = 0; // Set the source level
 
-        queue<int> q;
-        if (rank == 0) q.push(source);
+        vector<int> current_frontier; // Current BFS frontier
+        vector<int> next_frontier;    // Next BFS frontier (local)
+        if (rank == 0) current_frontier.push_back(source); // Start BFS from the source on rank 0
+
+        int current_level = 0;
 
         while (true) {
-            vector<vector<int>> sendBuffer(nprocs);  // Buffer for vertices to send
-            while (!q.empty()) {
-                int u = q.front(); q.pop();
+            vector<vector<int>> sendBuffer(nprocs); // Buffer for vertices to send
+
+            // Process the current frontier and populate sendBuffer
+            for (int u : current_frontier) {
                 for (const Edge& e : adj[u]) {
-                    if (e.flow < e.capacity && level[e.to] == -1) {
+                    if (e.flow < e.capacity && level[e.to] == -1) { // Check if the edge can be traversed
                         int owner = find_owner(e.to);
                         sendBuffer[owner].push_back(e.to);
                     }
                 }
             }
 
-            vector<vector<int>> recvBuffer(nprocs);
-            vector<MPI_Request> requests(nprocs);
-
+            // Flatten sendBuffer for MPI_Alltoallv
+            vector<int> sendData;
+            vector<int> sendCounts(nprocs, 0);
+            vector<int> sendDisplacements(nprocs, 0);
             for (int i = 0; i < nprocs; ++i) {
-                if (!sendBuffer[i].empty()) {
-                    if (rank != i) {
-                        MPI_Isend(sendBuffer[i].data(), sendBuffer[i].size(), MPI_INT, i, 0, MPI_COMM_WORLD, &requests[i]);
-                    } else {
-                        for (int u : sendBuffer[i]) {
-                            recvBuffer[i].push_back(u);
-                        }
-                    }
-                }
+                sendCounts[i] = sendBuffer[i].size();
+                sendDisplacements[i] = sendData.size();
+                sendData.insert(sendData.end(), sendBuffer[i].begin(), sendBuffer[i].end());
             }
 
+            // Exchange counts using MPI_Alltoall
+            vector<int> recvCounts(nprocs, 0);
+            MPI_Alltoall(sendCounts.data(), 1, MPI_INT, recvCounts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+            // Compute displacements for receiving data and allocate recvData
+            vector<int> recvDisplacements(nprocs, 0);
+            int totalRecv = 0;
             for (int i = 0; i < nprocs; ++i) {
-                if (rank != i) {
-                    int recv_size;
-                    MPI_Status status;
-                    MPI_Probe(i, 0, MPI_COMM_WORLD, &status);
-                    MPI_Get_count(&status, MPI_INT, &recv_size);
-                    recvBuffer[i].resize(recv_size);
-                    MPI_Recv(recvBuffer[i].data(), recv_size, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                }
+                recvDisplacements[i] = totalRecv;
+                totalRecv += recvCounts[i];
             }
+            vector<int> recvData(totalRecv);
 
-            MPI_Waitall(nprocs - 1, requests.data(), MPI_STATUSES_IGNORE);
+            // Perform the data exchange using MPI_Alltoallv
+            MPI_Alltoallv(
+                sendData.data(), sendCounts.data(), sendDisplacements.data(), MPI_INT,
+                recvData.data(), recvCounts.data(), recvDisplacements.data(), MPI_INT, MPI_COMM_WORLD
+            );
 
+            // Process the received data and update levels
             bool updated = false;
             for (int i = 0; i < nprocs; ++i) {
-                for (int u : recvBuffer[i]) {
-                    if (level[u] == -1) {
-                        level[u] = level[find_owner(u)] + 1;
-                        if (rank == find_owner(u)) q.push(u);
-                        updated = true;
-                    }
+                for (int j = recvDisplacements[i]; j < recvDisplacements[i] + recvCounts[i]; ++j) {
+                    int u = recvData[j];
+                    level[u] = current_level + 1; // Set the level
+                    next_frontier.push_back(u);   // Add to local next frontier
+                    updated = true;
                 }
             }
 
-            // Synchronize levels across all processes using MPI_Allreduce
+            // Synchronize updates across all processes
             int local_updated = updated ? 1 : 0;
             int global_updated;
             MPI_Allreduce(&local_updated, &global_updated, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
 
+            // If no updates were made, BFS is complete
             if (!global_updated) break;
+
+            // Move to the next level
+            current_frontier = move(next_frontier); // Transfer ownership of the next frontier
+            next_frontier.clear();
+            current_level++;
         }
 
+        // Check if the sink is reachable
         return level[sink] != -1;
     }
+
+    // Parallel BFS using MPI for level graph construction
+    // bool parallel_bfs(int source, int sink) {
+    //     fill(level.begin(), level.end(), -1);
+    //     level[source] = 0;
+
+    //     queue<int> q;
+    //     if (rank == 0) q.push(source);
+
+    //     while (true) {
+    //         vector<vector<int>> sendBuffer(nprocs);  // Buffer for vertices to send
+    //         while (!q.empty()) {
+    //             int u = q.front(); q.pop();
+    //             for (const Edge& e : adj[u]) {
+    //                 if (e.flow < e.capacity && level[e.to] == -1) {
+    //                     int owner = find_owner(e.to);
+    //                     sendBuffer[owner].push_back(e.to);
+    //                 }
+    //             }
+    //         }
+
+    //         vector<vector<int>> recvBuffer(nprocs);
+    //         vector<MPI_Request> requests(nprocs);
+
+    //         for (int i = 0; i < nprocs; ++i) {
+    //             if (!sendBuffer[i].empty()) {
+    //                 if (rank != i) {
+    //                     MPI_Isend(sendBuffer[i].data(), sendBuffer[i].size(), MPI_INT, i, 0, MPI_COMM_WORLD, &requests[i]);
+    //                 } else {
+    //                     for (int u : sendBuffer[i]) {
+    //                         recvBuffer[i].push_back(u);
+    //                     }
+    //                 }
+    //             }
+    //         }
+
+    //         for (int i = 0; i < nprocs; ++i) {
+    //             if (rank != i) {
+    //                 int recv_size;
+    //                 MPI_Status status;
+    //                 MPI_Probe(i, 0, MPI_COMM_WORLD, &status);
+    //                 MPI_Get_count(&status, MPI_INT, &recv_size);
+    //                 recvBuffer[i].resize(recv_size);
+    //                 MPI_Recv(recvBuffer[i].data(), recv_size, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    //             }
+    //         }
+
+    //         MPI_Waitall(nprocs - 1, requests.data(), MPI_STATUSES_IGNORE);
+
+    //         bool updated = false;
+    //         for (int i = 0; i < nprocs; ++i) {
+    //             for (int u : recvBuffer[i]) {
+    //                 if (level[u] == -1) {
+    //                     level[u] = level[find_owner(u)] + 1;
+    //                     if (rank == find_owner(u)) q.push(u);
+    //                     updated = true;
+    //                 }
+    //             }
+    //         }
+
+    //         // Synchronize levels across all processes using MPI_Allreduce
+    //         int local_updated = updated ? 1 : 0;
+    //         int global_updated;
+    //         MPI_Allreduce(&local_updated, &global_updated, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+
+    //         if (!global_updated) break;
+    //     }
+
+    //     return level[sink] != -1;
+    // }
 
     // bool parallel_bfs(int source, int sink) {
     //     // Initialize level array
