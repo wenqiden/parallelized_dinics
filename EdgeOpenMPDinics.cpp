@@ -3,6 +3,7 @@
 #include <queue>
 #include <chrono>
 #include <omp.h>
+#include <algorithm>
 using namespace std;
 using namespace std::chrono;
 
@@ -45,7 +46,7 @@ public:
             next_level.clear();
 
             // Process edges in parallel
-            #pragma omp parallel for schedule(dynamic, 100000) reduction(vec_merge: next_level)
+            #pragma omp parallel for schedule(dynamic, 100)
             for (size_t idx = 0; idx < current_level.size() * n; ++idx) {
                 int u = current_level[idx/n];
                 int v = idx % n;
@@ -54,7 +55,8 @@ public:
                 if (capacity[u][v] > flow[u][v] && level[v] == -1) {
                     // Atomically set level[v] to level[u] + 1 if it's still -1
                     if (__sync_bool_compare_and_swap(&level[v], -1, level[u] + 1)) {
-                        next_level.push_back(v); // Reduction merges into next_level
+                        #pragma omp critical
+                        next_level.push_back(v);
                     }
                 }
             }
@@ -65,6 +67,115 @@ public:
 
         return level[sink] != -1;
     }
+
+    // Merging with critical
+    // bool parallel_bfs(int source, int sink) {
+    //     fill(level.begin(), level.end(), -1);
+    //     level[source] = 0;
+
+    //     vector<int> frontier = {source};
+    //     const int PARALLEL_THRESHOLD = 1000;
+
+    //     while (!frontier.empty()) {
+    //         vector<int> next_level;  // Shared across threads, used after merging results
+
+    //         if (frontier.size() < PARALLEL_THRESHOLD) {
+    //             // Sequential BFS
+    //             for (int u : frontier) {
+    //                 for (int v = 0; v < n; ++v) {
+    //                     if (capacity[u][v] > flow[u][v] && level[v] == -1) {
+    //                         level[v] = level[u] + 1;
+    //                         next_level.push_back(v);
+    //                     }
+    //                 }
+    //             }
+    //         } else {
+    //             // Parallel BFS (flattened loops)
+    //             #pragma omp parallel
+    //             {
+    //                 vector<int> thread_local_next_level;  // Thread-local vector
+
+    //                 #pragma omp for schedule(dynamic, 64)
+    //                 for (size_t idx = 0; idx < frontier.size() * n; ++idx) {
+    //                     int u = frontier[idx / n];
+    //                     int v = idx % n;
+
+    //                     if (capacity[u][v] > flow[u][v] && level[v] == -1) {
+    //                         level[v] = level[u] + 1;
+    //                         thread_local_next_level.push_back(v);
+
+    //                         // Atomically set level[v] to level[u] + 1 if it's still -1
+    //                         // if (__sync_bool_compare_and_swap(&level[v], -1, level[u] + 1)) {
+    //                         //     thread_local_next_level.push_back(v);
+    //                         // }
+    //                     }
+    //                 }
+
+    //                 // Merge thread-local results into the shared next_level
+    //                 #pragma omp critical
+    //                 next_level.insert(next_level.end(), thread_local_next_level.begin(), thread_local_next_level.end());
+    //             }
+
+    //             // Deduplicate the merged results in next_level
+    //             sort(next_level.begin(), next_level.end());
+    //             next_level.erase(unique(next_level.begin(), next_level.end()), next_level.end());
+    //         }
+
+    //         frontier.swap(next_level);  // Move to the next level
+    //     }
+
+    //     return level[sink] != -1;
+    // }
+
+    // Merging by reduction
+    // bool parallel_bfs(int source, int sink) {
+    //     fill(level.begin(), level.end(), -1);
+    //     level[source] = 0;
+
+    //     vector<int> frontier = {source};
+    //     const int PARALLEL_THRESHOLD = 1000;
+
+    //     while (!frontier.empty()) {
+    //         vector<int> next_level;  // Shared across threads, managed by reduction
+
+    //         if (frontier.size() < PARALLEL_THRESHOLD) {
+    //             // Sequential BFS
+    //             for (int u : frontier) {
+    //                 for (int v = 0; v < n; ++v) {
+    //                     if (capacity[u][v] > flow[u][v] && level[v] == -1) {
+    //                         level[v] = level[u] + 1;
+    //                         next_level.push_back(v);
+    //                     }
+    //                 }
+    //             }
+    //         } else {
+    //             // Parallel BFS (flattened loop)
+    //             #pragma omp parallel for schedule(dynamic, 64) reduction(vec_merge: next_level)
+    //             for (size_t idx = 0; idx < frontier.size() * n; ++idx) {
+    //                 int u = frontier[idx / n];
+    //                 int v = idx % n;
+
+    //                 if (capacity[u][v] > flow[u][v] && level[v] == -1) {
+    //                     // level[v] = level[u] + 1;
+    //                     // next_level.push_back(v);
+
+    //                     // Atomically set level[v] to level[u] + 1 if it's still -1
+    //                     if (__sync_bool_compare_and_swap(&level[v], -1, level[u] + 1)) {
+    //                         next_level.push_back(v);
+    //                     }
+    //                 }
+    //             }
+    //         }
+
+    //         // Deduplicate the merged results in next_level
+    //         // sort(next_level.begin(), next_level.end());
+    //         // next_level.erase(unique(next_level.begin(), next_level.end()), next_level.end());
+
+    //         frontier.swap(next_level);  // Move to the next level
+    //     }
+
+    //     return level[sink] != -1;
+    // }
 
     int dfs(int u, int sink, int pushed) {
         if (u == sink) return pushed;
