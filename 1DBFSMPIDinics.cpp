@@ -21,6 +21,8 @@ public:
     vector<int> level;
     vector<size_t> ptr;
     int n;
+    int rank;
+    int nprocs;
 
     Dinic(int n) : n(n) {
         adj.resize(n);
@@ -35,63 +37,72 @@ public:
         adj[v].push_back(b);
     }
 
+    int find_owner(int vertex) {
+        // Simple block distribution
+        int vertices_per_process = n / nprocs;
+        return vertex / vertices_per_process;
+    }
+
     // Parallel BFS using MPI for level graph construction
-    bool parallel_bfs(int source, int sink, int rank, int size) {
-        // Initialize level array
+    bool parallel_bfs(int source, int sink) {
         fill(level.begin(), level.end(), -1);
         level[source] = 0;
 
-        // Use a queue for the BFS
         queue<int> q;
-        if (rank == 0) {
-            q.push(source);
-        }
+        if (rank == 0) q.push(source);
 
-        // Distribute BFS work across processors
         while (true) {
-            vector<int> current_frontier;
-
-            // Collect current frontier on each processor
-            if (!q.empty()) {
-                while (!q.empty()) {
-                    current_frontier.push_back(q.front());
-                    q.pop();
+            vector<vector<int>> sendBuffer(nprocs);  // Buffer for vertices to send
+            while (!q.empty()) {
+                int u = q.front(); q.pop();
+                for (const Edge& e : adj[u]) {
+                    if (e.flow < e.capacity && level[e.to] == -1) {
+                        int owner = find_owner(e.to);
+                        sendBuffer[owner].push_back(e.to);
+                    }
                 }
             }
 
-            // Share the current frontier with all processors
-            int frontier_size = current_frontier.size();
-            vector<int> recv_frontier;
-            vector<int> recv_counts(size);
-            MPI_Allgather(&frontier_size, 1, MPI_INT, recv_counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+            vector<vector<int>> recvBuffer(nprocs);
+            vector<MPI_Request> requests(nprocs);
 
-            int total_frontier_size = 0;
-            for (int count : recv_counts) total_frontier_size += count;
-            recv_frontier.resize(total_frontier_size);
-
-            vector<int> displs(size, 0);
-            for (int i = 1; i < size; ++i) {
-                displs[i] = displs[i - 1] + recv_counts[i - 1];
+            for (int i = 0; i < nprocs; ++i) {
+                if (!sendBuffer[i].empty()) {
+                    if (rank != i) {
+                        MPI_Isend(sendBuffer[i].data(), sendBuffer[i].size(), MPI_INT, i, 0, MPI_COMM_WORLD, &requests[i]);
+                    } else {
+                        for (int u : sendBuffer[i]) {
+                            recvBuffer[i].push_back(u);
+                        }
+                    }
+                }
             }
 
-            MPI_Allgatherv(current_frontier.data(), frontier_size, MPI_INT, recv_frontier.data(),
-                           recv_counts.data(), displs.data(), MPI_INT, MPI_COMM_WORLD);
+            for (int i = 0; i < nprocs; ++i) {
+                if (rank != i) {
+                    int recv_size;
+                    MPI_Status status;
+                    MPI_Probe(i, 0, MPI_COMM_WORLD, &status);
+                    MPI_Get_count(&status, MPI_INT, &recv_size);
+                    recvBuffer[i].resize(recv_size);
+                    MPI_Recv(recvBuffer[i].data(), recv_size, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                }
+            }
 
-            // Process the received frontier
+            MPI_Waitall(nprocs - 1, requests.data(), MPI_STATUSES_IGNORE);
+
             bool updated = false;
-            for (int u : recv_frontier) {
-                for (const Edge& e : adj[u]) {
-                    if (e.flow < e.capacity && level[e.to] == -1) {
-                        level[e.to] = level[u] + 1;
-                        if (rank == e.to / (n / size)) { // If vertex belongs to this processor
-                            q.push(e.to);
-                        }
+            for (int i = 0; i < nprocs; ++i) {
+                for (int u : recvBuffer[i]) {
+                    if (level[u] == -1) {
+                        level[u] = level[find_owner(u)] + 1;
+                        if (rank == find_owner(u)) q.push(u);
                         updated = true;
                     }
                 }
             }
 
-            // Check if BFS is done
+            // Synchronize levels across all processes using MPI_Allreduce
             int local_updated = updated ? 1 : 0;
             int global_updated;
             MPI_Allreduce(&local_updated, &global_updated, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
@@ -101,6 +112,81 @@ public:
 
         return level[sink] != -1;
     }
+
+    // bool parallel_bfs(int source, int sink) {
+    //     // Initialize level array
+    //     fill(level.begin(), level.end(), -1);
+    //     level[source] = 0;
+
+    //     // Use a queue for the BFS
+    //     queue<int> q;
+    //     if (rank == 0) {
+    //         q.push(source);
+    //     }
+
+    //     // Distribute BFS work across processors
+    //     while (true) {
+    //         vector<int> current_frontier;
+
+    //         // Collect current frontier on each processor
+    //         if (!q.empty()) {
+    //             while (!q.empty()) {
+    //                 current_frontier.push_back(q.front());
+    //                 q.pop();
+    //             }
+    //         }
+
+    //         // Share the current frontier with all processors
+    //         int frontier_size = current_frontier.size();
+    //         vector<int> recv_frontier;
+    //         vector<int> recv_counts(nprocs);
+    //         MPI_Allgather(&frontier_size, 1, MPI_INT, recv_counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+    //         int total_frontier_size = 0;
+    //         for (int count : recv_counts) total_frontier_size += count;
+    //         recv_frontier.resize(total_frontier_size);
+
+    //         vector<int> displs(nprocs, 0);
+    //         for (int i = 1; i < nprocs; ++i) {
+    //             displs[i] = displs[i - 1] + recv_counts[i - 1];
+    //         }
+
+    //         MPI_Allgatherv(current_frontier.data(), frontier_size, MPI_INT, recv_frontier.data(),
+    //                        recv_counts.data(), displs.data(), MPI_INT, MPI_COMM_WORLD);
+
+    //         // Process the received frontier
+    //         bool updated = false;
+    //         for (int u : recv_frontier) {
+    //             for (const Edge& e : adj[u]) {
+    //                 if (e.flow < e.capacity && level[e.to] == -1) {
+    //                     level[e.to] = level[u] + 1;
+    //                     if (rank == e.to / (n / nprocs)) { // If vertex belongs to this processor
+    //                         q.push(e.to);
+    //                     }
+    //                     updated = true;
+    //                 }
+    //             }
+    //         }
+
+    //         // Check if BFS is done
+    //         int local_updated = updated ? 1 : 0;
+    //         int global_updated;
+    //         MPI_Allreduce(&local_updated, &global_updated, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+
+    //         if (!global_updated) break;
+    //     }
+
+    //     for (int i = 0; i < nprocs; ++i) {
+    //         if (rank == i) {
+    //             cout << "Rank " << rank << " level: ";
+    //             for (int l : level) cout << l << " ";
+    //             cout << endl;
+    //         }
+    //         MPI_Barrier(MPI_COMM_WORLD);
+    //     }
+
+    //     return level[sink] != -1;
+    // }
 
     // DFS for augmenting flows
     int dfs(int u, int sink, int pushed) {
@@ -120,18 +206,19 @@ public:
     }
 
     // Max Flow computation using the parallelized BFS
-    int maxFlow(int source, int sink, int rank, int size) {
+    int maxFlow(int source, int sink) {
         int flow = 0;
-        while (parallel_bfs(source, sink, rank, size)) {
-            fill(ptr.begin(), ptr.end(), 0);
-            while (int pushed = dfs(source, sink, INF)) {
-                flow += pushed;
+        while (parallel_bfs(source, sink)) {
+            if (rank == 0) {
+                fill(ptr.begin(), ptr.end(), 0);
+                while (int pushed = dfs(source, sink, INF)) {
+                    flow += pushed;
+                }
             }
         }
         return flow;
     }
 };
-
 
 // Buffered input for faster reading
 const int BUFFER_SIZE = 1 << 30; // 1 GB buffer
@@ -157,12 +244,9 @@ inline int fast_read_int() {
     return x;
 }
 
-
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        cout << "Usage: " << argv[0] << " <input_file>" << endl;
-        return 1;
-    }
+
+    auto init_start = high_resolution_clock::now();
 
     MPI_Init(&argc, &argv);
 
@@ -182,21 +266,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    auto init_start = high_resolution_clock::now();
+    int n, m, source, sink;
+    // Read graph data
+    n = fast_read_int();
+    m = fast_read_int();
+    source = fast_read_int();
+    sink = fast_read_int();
 
-    // Use freopen to redirect stdin to the input file
-    if (freopen(argv[1], "r", stdin) == nullptr) {
-        cerr << "Error: Could not open file " << argv[1] << endl;
-        return 1;
-    }
-
-    int n = fast_read_int();
-    int m = fast_read_int();
-    
     Dinic dinic(n);
-
-    int source = fast_read_int();
-    int sink = fast_read_int();
+    dinic.rank = rank;
+    dinic.nprocs = nprocs;
 
     for (int i = 0; i < m; ++i) {
         int u = fast_read_int();
@@ -212,7 +291,7 @@ int main(int argc, char* argv[]) {
     auto comp_start = high_resolution_clock::now();
 
     // Compute maximum flow using parallelized BFS
-    int max_flow = dinic.maxFlow(source, sink, rank, nprocs);
+    int max_flow = dinic.maxFlow(source, sink);
 
     auto comp_end = high_resolution_clock::now();
     double comp_time = duration_cast<nanoseconds>(comp_end - comp_start).count();
