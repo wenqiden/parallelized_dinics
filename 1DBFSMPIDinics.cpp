@@ -26,7 +26,7 @@ public:
 
     Dinic(int n) : n(n) {
         adj.resize(n);
-        level.resize(n);
+        level.resize(n, -1);
         ptr.resize(n);
     }
 
@@ -38,14 +38,39 @@ public:
     }
 
     int find_owner(int vertex) {
-        // Simple block distribution
-        int vertices_per_process = n / nprocs;
-        return vertex / vertices_per_process;
+        // block distribution, allow first few processors to have one extra vertex
+        int base_vertices = n / nprocs;
+        int extra_vertices = n % nprocs;
+
+        if (vertex < (base_vertices + 1) * extra_vertices) {
+            return vertex / (base_vertices + 1);
+        } else {
+            return (vertex - extra_vertices * (base_vertices + 1)) / base_vertices + extra_vertices;
+        }
+    }
+
+    int adjust_index(int vertex) {
+        // find relative index of local vertex
+        int base_vertices = n / nprocs;
+        int extra_vertices = n % nprocs;
+        int start_index = rank * base_vertices + min(rank, extra_vertices);
+        return vertex - start_index;      
     }
 
     bool parallel_bfs(int source, int sink) {
+        int base_vertices = n / nprocs;
+        int extra_vertices = n % nprocs;
+        int local_level_size = base_vertices + (rank < extra_vertices ? 1 : 0);
+        vector<int> local_level(local_level_size);
         fill(level.begin(), level.end(), -1); // Reset levels
-        level[source] = 0; // Set the source level
+        fill(local_level.begin(), local_level.end(), -1); // Reset levels
+
+        if (find_owner(source) == rank) {
+            int local_source = adjust_index(source);
+            local_level[local_source] = 0; // Set the source level
+        }
+
+        // local_level[source] = 0;
 
         vector<int> current_frontier; // Current BFS frontier
         vector<int> next_frontier;    // Next BFS frontier (local)
@@ -55,13 +80,20 @@ public:
 
         while (true) {
             vector<vector<int>> sendBuffer(nprocs); // Buffer for vertices to send
+            // ensure send buffer is empty
+            for (int i = 0; i < nprocs; ++i) {
+                sendBuffer[i].clear();
+            }
 
             // Process the current frontier and populate sendBuffer
             for (int u : current_frontier) {
                 for (const Edge& e : adj[u]) {
-                    if (e.flow < e.capacity && level[e.to] == -1) { // Check if the edge can be traversed
+                    if (e.flow < e.capacity) { // Check if the edge can be traversed
                         int owner = find_owner(e.to);
-                        sendBuffer[owner].push_back(e.to);
+                        // only push to buffer if not already in the buffer
+                        if (find(sendBuffer[owner].begin(), sendBuffer[owner].end(), e.to) == sendBuffer[owner].end()) {
+                            sendBuffer[owner].push_back(e.to);
+                        }
                     }
                 }
             }
@@ -76,9 +108,19 @@ public:
                 sendData.insert(sendData.end(), sendBuffer[i].begin(), sendBuffer[i].end());
             }
 
+            // for (int i = 0; i < nprocs; ++i) {
+            //     if (rank == i) {
+            //         cout << "Rank " << rank << " sendCounts: ";
+            //         for (int c : sendCounts) cout << c << " ";
+            //         cout << endl;
+            //     }
+            // }
+
             // Exchange counts using MPI_Alltoall
             vector<int> recvCounts(nprocs, 0);
             MPI_Alltoall(sendCounts.data(), 1, MPI_INT, recvCounts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+
 
             // Compute displacements for receiving data and allocate recvData
             vector<int> recvDisplacements(nprocs, 0);
@@ -100,9 +142,12 @@ public:
             for (int i = 0; i < nprocs; ++i) {
                 for (int j = recvDisplacements[i]; j < recvDisplacements[i] + recvCounts[i]; ++j) {
                     int u = recvData[j];
-                    level[u] = current_level + 1; // Set the level
-                    next_frontier.push_back(u);   // Add to local next frontier
-                    updated = true;
+                    int adjusted_u = adjust_index(u);
+                    if (local_level[adjusted_u] == -1) {
+                        local_level[adjusted_u] = current_level + 1; // Set the level
+                        next_frontier.push_back(u);   // Add to local next frontier
+                        updated = true;
+                    }
                 }
             }
 
@@ -119,6 +164,23 @@ public:
             next_frontier.clear();
             current_level++;
         }
+
+        // all gather local levels to global level
+        vector<int> global_level(n);
+        vector<int> recvCounts(nprocs);
+        vector<int> displs(nprocs, 0);
+        for (int i = 0; i < nprocs; ++i) {
+            recvCounts[i] = (i < extra_vertices ? base_vertices + 1 : base_vertices);
+            if (i > 0) displs[i] = displs[i - 1] + recvCounts[i - 1];
+        }
+
+        MPI_Barrier(MPI_COMM_WORLD);
+
+
+        MPI_Allgatherv(
+            local_level.data(), local_level_size, MPI_INT,
+            level.data(), recvCounts.data(), displs.data(), MPI_INT, MPI_COMM_WORLD
+        );
 
         // Check if the sink is reachable
         return level[sink] != -1;
@@ -290,19 +352,21 @@ public:
     int maxFlow(int source, int sink) {
         int flow = 0;
         while (parallel_bfs(source, sink)) {
-            if (rank == 0) {
-                fill(ptr.begin(), ptr.end(), 0);
-                while (int pushed = dfs(source, sink, INF)) {
-                    flow += pushed;
-                }
+            // if (rank == 0) {
+            fill(ptr.begin(), ptr.end(), 0);
+            while (int pushed = dfs(source, sink, INF)) {
+                flow += pushed;
             }
+            // }
+            MPI_Barrier(MPI_COMM_WORLD);
+            // broadcast flow to all processors
         }
         return flow;
     }
 };
 
 // Buffered input for faster reading
-const int BUFFER_SIZE = 1 << 30; // 1 GB buffer
+const int BUFFER_SIZE = 1 << 20; // 1 MB buffer
 char buffer[BUFFER_SIZE];
 size_t buffer_pos = 0, buffer_len = 0;
 
