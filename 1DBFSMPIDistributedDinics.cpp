@@ -17,25 +17,42 @@ struct Edge {
 
 class Dinic {
 public:
-    vector<vector<Edge>> adj;
-    vector<int> local_row_ptr, local_col_idx, local_capacities, local_flows;
-    vector<int> level;
+    // vector<vector<Edge>> adj;
+    vector<int> local_row_ptr, local_col_idx, local_capacities, local_flows,
+                global_row_ptr, global_col_idx, global_capacities, global_flows,
+                send_col_counts, send_col_displs; 
+    vector<int> global_level;
     vector<size_t> ptr;
-    int n;
+    int n, m;
+    int local_n;
     int rank;
     int nprocs;
+    int local_col_count;
 
-    Dinic(int n, int rank, int nprocs) 
-        : n(n), rank(rank), nprocs(nprocs) {}
+    Dinic(int n, int m, int rank, int nprocs) 
+        : n(n), m(m), rank(rank), nprocs(nprocs) {}
 
-    void initialize(const vector<int>& row_ptr, const vector<int>& col_idx,
-                    const vector<int>& capacities, const vector<int>& flows) {
-        local_row_ptr = row_ptr;
-        local_col_idx = col_idx;
-        local_capacities = capacities;
-        local_flows.resize(capacities.size(), 0);
-        level.resize(n, -1);
-        ptr.resize(n);
+    void initialize(const vector<int>& local_row_ptr, const vector<int>& local_col_idx,
+                    const vector<int>& local_capacities, const int local_col_count,
+                    const vector<int>& global_row_ptr, const vector<int>& global_col_idx,
+                    const vector<int>& global_capacities,
+                    const vector<int>& send_col_displs, const vector<int>& send_col_counts) {
+        this->local_row_ptr = local_row_ptr;
+        this->local_n = local_row_ptr.size() - 1;
+        this->local_col_idx = local_col_idx;
+        this->local_capacities = local_capacities;
+        this->local_flows.resize(local_capacities.size(), 0);
+        if (rank == 0) {
+            this->ptr.resize(n);
+            this->global_level.resize(n, -1);
+            this->global_row_ptr = global_row_ptr;
+            this->global_col_idx = global_col_idx;
+            this->global_capacities = global_capacities;
+            this->global_flows.resize(2*m, 0);
+            this->send_col_counts = send_col_counts;
+            this->send_col_displs = send_col_displs;
+        }
+        this->local_col_count = local_col_count;
     }
 
     // void addEdge(int u, int v, int capacity) {
@@ -66,12 +83,12 @@ public:
     }
 
     bool parallel_bfs(int source, int sink) {
+        vector<int> local_level(local_n);
+        fill(local_level.begin(), local_level.end(), -1); // Reset levels
+        // fill(level.begin(), level.end(), -1); // Reset levels
+
         int base_vertices = n / nprocs;
         int extra_vertices = n % nprocs;
-        int local_level_size = base_vertices + (rank < extra_vertices ? 1 : 0);
-        vector<int> local_level(local_level_size);
-        fill(level.begin(), level.end(), -1); // Reset levels
-        fill(local_level.begin(), local_level.end(), -1); // Reset levels
 
         if (find_owner(source) == rank) {
             int local_source = adjust_index(source);
@@ -95,12 +112,15 @@ public:
 
             // Process the current frontier and populate sendBuffer
             for (int u : current_frontier) {
-                for (const Edge& e : adj[u]) {
-                    if (e.flow < e.capacity) { // Check if the edge can be traversed
-                        int owner = find_owner(e.to);
+                int adjusted_u = adjust_index(u);
+                for (int i = local_row_ptr[adjusted_u]; i < local_row_ptr[adjusted_u + 1]; ++i) {
+                    int v = local_col_idx[i];
+                    
+                    if (local_flows[i] < local_capacities[i]) { // Check if the edge can be traversed
+                        int owner = find_owner(v);
                         // only push to buffer if not already in the buffer
-                        if (find(sendBuffer[owner].begin(), sendBuffer[owner].end(), e.to) == sendBuffer[owner].end()) {
-                            sendBuffer[owner].push_back(e.to);
+                        if (find(sendBuffer[owner].begin(), sendBuffer[owner].end(), v) == sendBuffer[owner].end()) {
+                            sendBuffer[owner].push_back(v);
                         }
                     }
                 }
@@ -174,7 +194,6 @@ public:
         }
 
         // all gather local levels to global level
-        vector<int> global_level(n);
         vector<int> recvCounts(nprocs);
         vector<int> displs(nprocs, 0);
         for (int i = 0; i < nprocs; ++i) {
@@ -185,25 +204,46 @@ public:
         MPI_Barrier(MPI_COMM_WORLD);
 
 
-        MPI_Allgatherv(
-            local_level.data(), local_level_size, MPI_INT,
-            level.data(), recvCounts.data(), displs.data(), MPI_INT, MPI_COMM_WORLD
+        MPI_Gatherv(
+            local_level.data(), local_n, MPI_INT,
+            global_level.data(), recvCounts.data(), displs.data(), MPI_INT, 0, 
+            MPI_COMM_WORLD
         );
 
+        if (rank == 0) {
+            cout << "Global Level: ";
+            for (int l : global_level) cout << l << " ";
+            cout << endl;
+        }
+
+
+        bool reachable;
+
+        if (rank == 0) {
+            reachable = global_level[sink] != -1;
+        }
+        MPI_Bcast(&reachable, 1, MPI_C_BOOL, 0, MPI_COMM_WORLD);
+
         // Check if the sink is reachable
-        return level[sink] != -1;
+        return reachable;
     }
 
     // DFS for augmenting flows
     int dfs(int u, int sink, int pushed) {
         if (u == sink) return pushed;
-        for (size_t& i = ptr[u]; i < adj[u].size(); ++i) {
-            Edge& e = adj[u][i];
-            if (e.flow < e.capacity && level[e.to] == level[u] + 1) {
-                int tr = dfs(e.to, sink, min(pushed, e.capacity - e.flow));
+        int start_idx = global_row_ptr[u];
+        int end_idx = global_row_ptr[u + 1];
+        for (size_t& i = ptr[u]; i < end_idx - start_idx; ++i) {
+            int idx = start_idx + i;
+            int v = global_col_idx[idx];
+            if (global_flows[idx] < global_capacities[idx] && global_level[v] == global_level[u] + 1) {
+                int tr = dfs(v, sink, min(pushed, global_capacities[idx] - global_flows[idx]));
+                cout << "tr: " << tr << " u: " << u << " v: " << v << " pushed: " << pushed << endl;
                 if (tr > 0) {
-                    e.flow += tr;
-                    adj[e.to][e.rev].flow -= tr;
+                    global_flows[idx] += tr;
+                    auto it = std::find(global_col_idx.begin() + global_row_ptr[v], global_col_idx.begin() + global_row_ptr[v + 1], u);
+                    int rev_idx = global_row_ptr[v] + (it - global_col_idx.begin());
+                    global_flows[rev_idx] -= tr;
                     return tr;
                 }
             }
@@ -215,13 +255,26 @@ public:
     int maxFlow(int source, int sink) {
         int flow = 0;
         while (parallel_bfs(source, sink)) {
-            // if (rank == 0) {
-            fill(ptr.begin(), ptr.end(), 0);
-            while (int pushed = dfs(source, sink, INF)) {
-                flow += pushed;
+            if (rank == 0) {
+                fill(ptr.begin(), ptr.end(), 0);
+                while (int pushed = dfs(source, sink, INF)) {
+                    flow += pushed;
+                }
+            
+                cout << "Global Flows: ";
+                for (int f : global_flows) cout << f << " ";
+                cout << endl;
+
+                cout << "Global col_idx: ";
+                for (int c : global_col_idx) cout << c << " ";
+                cout << endl;
+                cout << "Global row_ptr: ";
+                for (int r : global_row_ptr) cout << r << " ";
+                cout << endl;
             }
-            // }
-            MPI_Barrier(MPI_COMM_WORLD);
+            // MPI_Barrier(MPI_COMM_WORLD);
+            MPI_Scatterv(global_flows.data(), send_col_counts.data(), send_col_displs.data(), MPI_INT,
+                 local_flows.data(), local_col_count, MPI_INT, 0, MPI_COMM_WORLD);
         }
         return flow;
     }
@@ -265,9 +318,11 @@ void partition_vertices(int n, int rank, int size, int& local_n, int& start_vert
 void scatter_csr(
     int n, int m, int rank, int size,
     const std::vector<int>& global_row_ptr, const std::vector<int>& global_col_idx,
-    const std::vector<int>& global_capacities, const std::vector<int>& global_flows,
+    const std::vector<int>& global_capacities, 
     std::vector<int>& local_row_ptr, std::vector<int>& local_col_idx,
-    std::vector<int>& local_capacities, std::vector<int>& local_flows) {
+    std::vector<int>& local_capacities,
+    std::vector<int>& send_col_counts, std::vector<int>& send_col_displs,
+    int& local_col_count) {
 
     // Step 1: Partition vertices
     int local_n, start_vertex, end_vertex;
@@ -275,7 +330,9 @@ void scatter_csr(
 
     // Step 2: Calculate row_ptr counts and displacements
     std::vector<int> send_row_counts(size), send_row_displs(size);
-    std::vector<int> send_col_counts(size), send_col_displs(size);
+    // std::vector<int> send_col_counts(size), send_col_displs(size);
+    send_col_counts.resize(size);
+    send_col_displs.resize(size);
 
     if (rank == 0) {
         for (int i = 0; i < size; i++) {
@@ -286,7 +343,7 @@ void scatter_csr(
             send_row_counts[i] = proc_size + 1;
 
             if (i > 0)
-                send_row_displs[i] = send_row_displs[i-1] + send_row_counts[i-1];
+                send_row_displs[i] = send_row_displs[i-1] + send_row_counts[i-1] - 1;
             else
                 send_row_displs[i] = 0;
 
@@ -299,27 +356,17 @@ void scatter_csr(
     // Step 3: Scatter row_ptr
     int local_row_count = local_n + 1;
     local_row_ptr.resize(local_row_count);
-    // cout << "rank " << rank << " send_row_counts: ";
-    // for (int i = 0; i < send_row_counts.size(); i++) {
-    //     cout << send_row_counts[i] << " ";
-    // }
-    // cout << endl;
 
-    // cout << "rank " << rank << " send_row_displs: ";
-    // for (int i = 0; i < send_row_displs.size(); i++) {
-    //     cout << send_row_displs[i] << " ";
-    // }
-    // cout << endl;
 
     // cout << "rank " << rank << " local_row_count: " << local_row_count << endl;
     MPI_Scatterv(global_row_ptr.data(), send_row_counts.data(), send_row_displs.data(), MPI_INT,
                  local_row_ptr.data(), local_row_count, MPI_INT, 0, MPI_COMM_WORLD);
 
-    cout << "rank " << rank << " local_row_ptr after scatter: ";
-    for (int i = 0; i < local_row_ptr.size(); i++) {
-        cout << local_row_ptr[i] << " ";
-    }
-    cout << endl;
+    // cout << "rank " << rank << " local_row_ptr after scatter: ";
+    // for (int i = 0; i < local_row_ptr.size(); i++) {
+    //     cout << local_row_ptr[i] << " ";
+    // }
+    // cout << endl;
 
     // Adjust local_row_ptr to start from 0
     int offset = local_row_ptr[0];
@@ -327,18 +374,29 @@ void scatter_csr(
         row -= offset;
     }
 
+
     // Step 4: Scatter col_idx, capacities, and flows
-    int local_col_count = rank == 0 ? send_col_counts[rank] : 0;
+    // int local_col_count;
+    MPI_Scatter(send_col_counts.data(), 1, MPI_INT, &local_col_count, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    //int local_col_count = rank == 0 ? send_col_counts[rank] : 0;
     local_col_idx.resize(local_col_count);
     local_capacities.resize(local_col_count);
-    local_flows.resize(local_col_count);
 
     MPI_Scatterv(global_col_idx.data(), send_col_counts.data(), send_col_displs.data(), MPI_INT,
                  local_col_idx.data(), local_col_count, MPI_INT, 0, MPI_COMM_WORLD);
+
+
+    // cout << "rank " << rank << " local_col_idx after scatter: ";
+    // for (int i = 0; i < local_col_idx.size(); i++) {
+    //     cout << local_col_idx[i] << " ";
+    // }
+    // cout << endl;
+
     MPI_Scatterv(global_capacities.data(), send_col_counts.data(), send_col_displs.data(), MPI_INT,
                  local_capacities.data(), local_col_count, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Scatterv(global_flows.data(), send_col_counts.data(), send_col_displs.data(), MPI_INT,
-                 local_flows.data(), local_col_count, MPI_INT, 0, MPI_COMM_WORLD);
+    // MPI_Scatterv(global_flows.data(), send_col_counts.data(), send_col_displs.data(), MPI_INT,
+    //             local_flows.data(), local_col_count, MPI_INT, 0, MPI_COMM_WORLD);
 }
 
 int main(int argc, char* argv[]) {
@@ -378,16 +436,12 @@ int main(int argc, char* argv[]) {
     MPI_Bcast(&sink, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
 
-    Dinic dinic(n, rank, nprocs);
-
-    int base_vertices = n / nprocs;
-    int extra_vertices = n % nprocs;
-    int local_block_size = base_vertices + (rank < extra_vertices ? 1 : 0);
+    Dinic dinic(n, m, rank, nprocs);
 
     dinic.rank = rank;
     dinic.nprocs = nprocs;
 
-    vector<int> row_ptr, col_idx, capacities, flows;
+    vector<int> global_row_ptr, global_col_idx, global_capacities;
 
     // Step 1: Read edges and build CSR
     if (rank == 0) {
@@ -398,49 +452,63 @@ int main(int argc, char* argv[]) {
             int v = fast_read_int();
             int capacity = fast_read_int();
             edges.emplace_back(u, v, capacity);
+            edges.emplace_back(v, u, 0); // Reverse edge
         }
 
-         row_ptr.resize(n + 1, 0);
+        global_row_ptr.resize(n + 1, 0);
         for (const auto& [u, v, c] : edges) {
-            row_ptr[u + 1]++; // Increment outdegree for vertex u
+            global_row_ptr[u + 1]++; // Increment outdegree for vertex u
         }
 
         // Step 3: Build row_ptr (prefix sum of outdegrees)
         for (int i = 1; i <= n; i++) {
-            row_ptr[i] += row_ptr[i - 1];
+            global_row_ptr[i] += global_row_ptr[i - 1];
         }
 
 
         std::cout << "rank " << rank << " row_ptr: ";
-        for (int i = 0; i < row_ptr.size(); i++) {
-            std::cout << row_ptr[i] << " ";
+        for (int i = 0; i < global_row_ptr.size(); i++) {
+            std::cout << global_row_ptr[i] << " ";
         }
         std::cout << std::endl;
 
         // Step 4: Populate col_idx, capacities, and flows
-        col_idx.resize(m);
-        capacities.resize(m);
-        flows.resize(m, 0); // Initialize flows to 0
-        std::vector<int> current_index = row_ptr; // Copy of row_ptr for edge insertion
+        global_col_idx.resize(2*m);
+        global_capacities.resize(2*m);
+        std::vector<int> current_index = global_row_ptr; // Copy of row_ptr for edge insertion
 
         for (const auto& [u, v, c] : edges) {
             int index = current_index[u]++;
-            col_idx[index] = v;
-            capacities[index] = c;
-            flows[index] = 0; // Initially, all flows are 0
+            global_col_idx[index] = v;
+            global_capacities[index] = c;
         }
     }
 
-    std::vector<int> local_row_ptr, local_col_idx, local_capacities, local_flows;    
+    std::vector<int> local_row_ptr, local_col_idx, local_capacities; 
+    vector<int> send_col_counts, send_col_displs;
+    int local_col_count;
 
-    scatter_csr(n, m, rank, nprocs, row_ptr, col_idx, capacities, flows,
-                local_row_ptr, local_col_idx, local_capacities, local_flows);
+    scatter_csr(n, m, rank, nprocs, global_row_ptr, global_col_idx, global_capacities,
+                local_row_ptr, local_col_idx, local_capacities, 
+                send_col_counts, send_col_displs, local_col_count);
 
     std::cout << "Process " << rank << " owns vertices [" << local_row_ptr.size() - 1
               << "] with " << local_col_idx.size() << " edges." << std::endl;
-    
-    exit(0);
+    if (rank == 0) {
+        cout << "rank " << rank << " send_col_counts: ";
+        for (int c : send_col_counts) cout << c << " ";
+        cout << endl;
+        cout << "rank " << rank << " send_col_displs: ";
+        for (int d : send_col_displs) cout << d << " ";
+        cout << endl;
+    }
+    cout << "rank " << rank << " local_col_count: " << local_col_count << endl;
 
+    dinic.initialize(
+        local_row_ptr, local_col_idx, local_capacities, local_col_count,
+        global_row_ptr, global_col_idx, global_capacities,
+        send_col_displs, send_col_counts
+    );
 
     auto init_end = high_resolution_clock::now();
     double init_time = duration_cast<nanoseconds>(init_end - init_start).count();
