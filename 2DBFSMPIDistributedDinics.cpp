@@ -5,11 +5,12 @@
 #include <chrono>
 #include <cstring>
 #include <cmath>
+#include <unordered_map>
 using namespace std;
 using namespace std::chrono;
 
 const int INF = 1e9;
-int P_COLUNM = 2;
+int P_COLUMN = 2;
 
 class Dinic {
 public:
@@ -18,7 +19,7 @@ public:
     vector<int> global_level;
     vector<size_t> ptr;
     int n, m;
-    // int local_n, local_m;
+    int local_n, local_m;
     int rank;
     int nprocs;
 
@@ -26,7 +27,8 @@ public:
         : n(n), m(m), rank(rank), nprocs(nprocs) {}
 
     void initialize(const vector<int>& local_capacities, 
-                    const vector<int>& global_capacities) {
+                    const vector<int>& global_capacities,
+                    int local_n, int local_m) {
         this->local_capacities = local_capacities;
         this->local_flows.resize(local_capacities.size(), 0);
         if (rank == 0) {
@@ -35,191 +37,285 @@ public:
             this->global_capacities = global_capacities;
             this->global_flows.resize(n*n, 0);
         }
+        this->local_n = local_n;
+        this->local_m = local_m;
     }
 
     int find_owner(int from_vertex) {
-        int base_vertices_col = n / P_COLUNM;
-        int remainder_col = n % P_COLUNM;
-        int base_vertices_row = n / (nprocs / P_COLUNM);
-        int remainder_row = n % (nprocs / P_COLUNM);
+        int base_vertices_col = (n + P_COLUMN - 1) / P_COLUMN;
+        int base_vertices_row = (n + (nprocs / P_COLUMN) - 1) / (nprocs / P_COLUMN);
+        int row = from_vertex / base_vertices_row;
+        int col = from_vertex / base_vertices_col;
 
-        int row_processor = from_vertex / (base_vertices_row + (from_vertex < remainder_row ? 1 : 0));
+        row = min(row, nprocs / P_COLUMN - 1);
+        col = min(col, P_COLUMN - 1);
 
-        int processor_rank = row_processor * P_COLUNM;
+        int processor_rank = row * P_COLUMN + col;
+
         return processor_rank;
     }
 
     int adjust_index(int vertex) {
         // find relative index of local vertex
-        int base_vertices = n / nprocs;
-        int extra_vertices = n % nprocs;
-        int start_index = rank * base_vertices + min(rank, extra_vertices);
-        return vertex - start_index;      
+        int block_row = (n + (nprocs / P_COLUMN) - 1) / (nprocs / P_COLUMN);
+        int adjusted_vertex = vertex % block_row;
+        return adjusted_vertex;
     }
 
     bool parallel_bfs(int source, int sink) {
+        int row_index = rank / P_COLUMN;
+        int col_index = rank % P_COLUMN;
+        int block_rows = (n + (nprocs / P_COLUMN) - 1) / (nprocs / P_COLUMN);
+        int block_cols = (n + P_COLUMN - 1) / P_COLUMN;
+
         vector<int> local_level(local_n);
         fill(local_level.begin(), local_level.end(), -1); // Reset levels
         // fill(level.begin(), level.end(), -1); // Reset levels
 
-        int base_vertices = n / nprocs;
-        int extra_vertices = n % nprocs;
+        vector<int> current_frontier;
+        vector<int> next_frontier; 
 
         if (find_owner(source) == rank) {
             int local_source = adjust_index(source);
             local_level[local_source] = 0; // Set the source level
+            current_frontier.push_back(source); 
         }
-
-        // local_level[source] = 0;
-
-        vector<int> current_frontier; // Current BFS frontier
-        vector<int> next_frontier;    // Next BFS frontier (local)
-        if (rank == 0) current_frontier.push_back(source); // Start BFS from the source on rank 0
 
         int current_level = 0;
 
-        while (true) {
-            vector<vector<int>> sendBuffer(nprocs); // Buffer for vertices to send
-            // ensure send buffer is empty
-            for (int i = 0; i < nprocs; ++i) {
-                sendBuffer[i].clear();
-            }
+        MPI_Comm row_comm, col_comm;
+        MPI_Comm_split(MPI_COMM_WORLD, rank / P_COLUMN, rank, &row_comm);
+        MPI_Comm_split(MPI_COMM_WORLD, rank % P_COLUMN, rank, &col_comm);
 
-            // Process the current frontier and populate sendBuffer
-            for (int u : current_frontier) {
-                int adjusted_u = adjust_index(u);
-                for (int i = local_row_ptr[adjusted_u]; i < local_row_ptr[adjusted_u + 1]; ++i) {
-                    int v = local_col_idx[i];
-                    
-                    if (local_flows[i] < local_capacities[i]) { // Check if the edge can be traversed
-                        int owner = find_owner(v);
-                        // only push to buffer if not already in the buffer
-                        if (find(sendBuffer[owner].begin(), sendBuffer[owner].end(), v) == sendBuffer[owner].end()) {
-                            sendBuffer[owner].push_back(v);
+        while (true) {
+            int local_size = current_frontier.size();
+            std::vector<int> all_sizes(P_COLUMN, 0); // Assuming P_cols processes per row
+            MPI_Allgather(&local_size, 1, MPI_INT, all_sizes.data(), 1, MPI_INT, row_comm);
+
+            std::vector<int> displs(P_COLUMN, 0);
+            int total_frontier = all_sizes[0];
+            for (int i = 1; i < P_COLUMN; ++i) {
+                displs[i] = displs[i - 1] + all_sizes[i - 1];
+                total_frontier += all_sizes[i];
+            }
+            std::vector<int> send_buffer = current_frontier;
+            std::vector<int> recv_buffer(total_frontier, -1);
+            MPI_Allgatherv(send_buffer.data(), local_size, MPI_INT,
+                      recv_buffer.data(), all_sizes.data(), displs.data(), MPI_INT,
+                      row_comm);
+
+            std::unordered_map<int, std::vector<int>> neighbors_by_owner;
+            for (int v : recv_buffer) {
+                if (v == -1 || v >= n) continue; // Skip invalid entries
+
+                // Determine the owner of vertex v
+                int v_row_owner, v_col_owner;
+                int v_owner = find_owner(v);
+
+                // Each process scans its local adjacency matrix for all vertices in the frontier
+                // to discover neighbors in its own column block
+                for (int local_row = 0; local_row < block_rows; ++local_row) {
+                    int global_vertex = row_index * block_rows + local_row;
+                    if (global_vertex != v) continue; // Only process the current vertex
+
+                    for (int u = 0; u < block_cols; ++u) {
+                        if (local_capacities[local_row * block_cols + u] - local_flows[local_row * block_cols + u] > 0) { // Edge exists
+                            int global_u = col_index * block_cols + u;
+
+                            if (global_u >= n) continue; // Skip out-of-bounds
+
+                            // Determine the owner of vertex u
+                            int u_row_owner, u_col_owner;
+                            int u_owner = find_owner(global_u);
+
+                            // Add u to the list for its owning processor
+                            neighbors_by_owner[u_owner].push_back(global_u);
                         }
                     }
                 }
             }
 
-            // Flatten sendBuffer for MPI_Alltoallv
-            vector<int> sendData;
-            vector<int> sendCounts(nprocs, 0);
-            vector<int> sendDisplacements(nprocs, 0);
-            for (int i = 0; i < nprocs; ++i) {
-                sendCounts[i] = sendBuffer[i].size();
-                sendDisplacements[i] = sendData.size();
-                sendData.insert(sendData.end(), sendBuffer[i].begin(), sendBuffer[i].end());
-            }
-
-            // for (int i = 0; i < nprocs; ++i) {
-            //     if (rank == i) {
-            //         cout << "Rank " << rank << " sendCounts: ";
-            //         for (int c : sendCounts) cout << c << " ";
-            //         cout << endl;
-            //     }
-            // }
-
-            // Exchange counts using MPI_Alltoall
-            vector<int> recvCounts(nprocs, 0);
-            MPI_Alltoall(sendCounts.data(), 1, MPI_INT, recvCounts.data(), 1, MPI_INT, MPI_COMM_WORLD);
-
-
-
-            // Compute displacements for receiving data and allocate recvData
-            vector<int> recvDisplacements(nprocs, 0);
-            int totalRecv = 0;
-            for (int i = 0; i < nprocs; ++i) {
-                recvDisplacements[i] = totalRecv;
-                totalRecv += recvCounts[i];
-            }
-            vector<int> recvData(totalRecv);
-
-            // Perform the data exchange using MPI_Alltoallv
-            MPI_Alltoallv(
-                sendData.data(), sendCounts.data(), sendDisplacements.data(), MPI_INT,
-                recvData.data(), recvCounts.data(), recvDisplacements.data(), MPI_INT, MPI_COMM_WORLD
-            );
-
-            // Process the received data and update levels
-            bool updated = false;
-            for (int i = 0; i < nprocs; ++i) {
-                for (int j = recvDisplacements[i]; j < recvDisplacements[i] + recvCounts[i]; ++j) {
-                    int u = recvData[j];
-                    int adjusted_u = adjust_index(u);
-                    if (local_level[adjusted_u] == -1) {
-                        local_level[adjusted_u] = current_level + 1; // Set the level
-                        next_frontier.push_back(u);   // Add to local next frontier
-                        updated = true;
-                    }
+            cout << "Rank " << rank << " neighbors_by_owner: ";
+            for (auto& [owner, neighbors] : neighbors_by_owner) {
+                cout << "Owner " << owner << ": ";
+                for (int v : neighbors) {
+                    cout << v << " ";
                 }
+                cout << endl;
             }
 
-            // Synchronize updates across all processes
-            int local_updated = updated ? 1 : 0;
-            int global_updated;
-            MPI_Allreduce(&local_updated, &global_updated, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+            // Prepare send counts and send buffers
+            std::vector<int> send_counts(nprocs, 0);
+            std::vector<int> send_displs_buffer(nprocs, 0);
+            std::vector<int> send_buffer_neighbors;
 
-            // If no updates were made, BFS is complete
-            if (!global_updated) break;
+            for (auto &[owner, neighbors] : neighbors_by_owner) {
+                send_counts[owner] = neighbors.size();
+                send_buffer_neighbors.insert(send_buffer_neighbors.end(), neighbors.begin(), neighbors.end());
+            }
 
-            // Move to the next level
-            current_frontier = move(next_frontier); // Transfer ownership of the next frontier
-            next_frontier.clear();
-            current_level++;
+            // Calculate send displacements
+            int send_total = 0;
+            for (int i = 0; i < nprocs; ++i) {
+                send_displs_buffer[i] = send_total;
+                send_total += send_counts[i];
+            }
+
+            // Exchange send counts to determine receive counts
+            std::vector<int> recv_counts_buffer(nprocs, 0);
+            MPI_Alltoall(send_counts.data(), 1, MPI_INT,
+                        recv_counts_buffer.data(), 1, MPI_INT, col_comm);
+
+            // Calculate receive displacements
+            std::vector<int> recv_displs_buffer(nprocs, 0);
+            int recv_total = recv_counts_buffer[0];
+            for (int i = 1; i < nprocs; ++i) {
+                recv_displs_buffer[i] = recv_displs_buffer[i - 1] + recv_counts_buffer[i - 1];
+                recv_total += recv_counts_buffer[i];
+            }
+
+            // Prepare receive buffer
+            std::vector<int> recv_buffer_neighbors(recv_total, -1);
+
+            // Perform MPI_Alltoallv to send and receive neighbors
+            MPI_Alltoallv(send_buffer_neighbors.data(), send_counts.data(), send_displs_buffer.data(), MPI_INT,
+                        recv_buffer_neighbors.data(), recv_counts_buffer.data(), recv_displs_buffer.data(), MPI_INT,
+                        col_comm);
+
         }
+        //     vector<vector<int>> sendBuffer(nprocs); // Buffer for vertices to send
+        //     // ensure send buffer is empty
+        //     for (int i = 0; i < nprocs; ++i) {
+        //         sendBuffer[i].clear();
+        //     }
 
-        // all gather local levels to global level
-        vector<int> recvCounts(nprocs);
-        vector<int> displs(nprocs, 0);
-        for (int i = 0; i < nprocs; ++i) {
-            recvCounts[i] = (i < extra_vertices ? base_vertices + 1 : base_vertices);
-            if (i > 0) displs[i] = displs[i - 1] + recvCounts[i - 1];
-        }
+        //     // Process the current frontier and populate sendBuffer
+        //     for (int u : current_frontier) {
+        //         int adjusted_u = adjust_index(u);
+        //         for (int i = local_row_ptr[adjusted_u]; i < local_row_ptr[adjusted_u + 1]; ++i) {
+        //             int v = local_col_idx[i];
+                    
+        //             if (local_flows[i] < local_capacities[i]) { // Check if the edge can be traversed
+        //                 int owner = find_owner(v);
+        //                 // only push to buffer if not already in the buffer
+        //                 if (find(sendBuffer[owner].begin(), sendBuffer[owner].end(), v) == sendBuffer[owner].end()) {
+        //                     sendBuffer[owner].push_back(v);
+        //                 }
+        //             }
+        //         }
+        //     }
 
-        MPI_Barrier(MPI_COMM_WORLD);
+        //     // Flatten sendBuffer for MPI_Alltoallv
+        //     vector<int> sendData;
+        //     vector<int> sendCounts(nprocs, 0);
+        //     vector<int> sendDisplacements(nprocs, 0);
+        //     for (int i = 0; i < nprocs; ++i) {
+        //         sendCounts[i] = sendBuffer[i].size();
+        //         sendDisplacements[i] = sendData.size();
+        //         sendData.insert(sendData.end(), sendBuffer[i].begin(), sendBuffer[i].end());
+        //     }
+
+        //     // Exchange counts using MPI_Alltoall
+        //     vector<int> recvCounts(nprocs, 0);
+        //     MPI_Alltoall(sendCounts.data(), 1, MPI_INT, recvCounts.data(), 1, MPI_INT, MPI_COMM_WORLD);
 
 
-        MPI_Gatherv(
-            local_level.data(), local_n, MPI_INT,
-            global_level.data(), recvCounts.data(), displs.data(), MPI_INT, 0, 
-            MPI_COMM_WORLD
-        );
 
-        bool reachable;
+        //     // Compute displacements for receiving data and allocate recvData
+        //     vector<int> recvDisplacements(nprocs, 0);
+        //     int totalRecv = 0;
+        //     for (int i = 0; i < nprocs; ++i) {
+        //         recvDisplacements[i] = totalRecv;
+        //         totalRecv += recvCounts[i];
+        //     }
+        //     vector<int> recvData(totalRecv);
 
-        if (rank == 0) {
-            reachable = global_level[sink] != -1;
-        }
-        MPI_Bcast(&reachable, 1, MPI_C_BOOL, 0, MPI_COMM_WORLD);
+        //     // Perform the data exchange using MPI_Alltoallv
+        //     MPI_Alltoallv(
+        //         sendData.data(), sendCounts.data(), sendDisplacements.data(), MPI_INT,
+        //         recvData.data(), recvCounts.data(), recvDisplacements.data(), MPI_INT, MPI_COMM_WORLD
+        //     );
 
-        // Check if the sink is reachable
-        return reachable;
+        //     // Process the received data and update levels
+        //     bool updated = false;
+        //     for (int i = 0; i < nprocs; ++i) {
+        //         for (int j = recvDisplacements[i]; j < recvDisplacements[i] + recvCounts[i]; ++j) {
+        //             int u = recvData[j];
+        //             int adjusted_u = adjust_index(u);
+        //             if (local_level[adjusted_u] == -1) {
+        //                 local_level[adjusted_u] = current_level + 1; // Set the level
+        //                 next_frontier.push_back(u);   // Add to local next frontier
+        //                 updated = true;
+        //             }
+        //         }
+        //     }
+
+        //     // Synchronize updates across all processes
+        //     int local_updated = updated ? 1 : 0;
+        //     int global_updated;
+        //     MPI_Allreduce(&local_updated, &global_updated, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+
+        //     // If no updates were made, BFS is complete
+        //     if (!global_updated) break;
+
+        //     // Move to the next level
+        //     current_frontier = move(next_frontier); // Transfer ownership of the next frontier
+        //     next_frontier.clear();
+        //     current_level++;
+        // }
+
+        // // all gather local levels to global level
+        // vector<int> recvCounts(nprocs);
+        // vector<int> displs(nprocs, 0);
+        // for (int i = 0; i < nprocs; ++i) {
+        //     recvCounts[i] = (i < extra_vertices ? base_vertices + 1 : base_vertices);
+        //     if (i > 0) displs[i] = displs[i - 1] + recvCounts[i - 1];
+        // }
+
+        // MPI_Barrier(MPI_COMM_WORLD);
+
+
+        // MPI_Gatherv(
+        //     local_level.data(), local_n, MPI_INT,
+        //     global_level.data(), recvCounts.data(), displs.data(), MPI_INT, 0, 
+        //     MPI_COMM_WORLD
+        // );
+
+        // bool reachable;
+
+        // if (rank == 0) {
+        //     reachable = global_level[sink] != -1;
+        // }
+        // MPI_Bcast(&reachable, 1, MPI_C_BOOL, 0, MPI_COMM_WORLD);
+
+        // // Check if the sink is reachable
+        // return reachable;
     }
 
     // DFS for augmenting flows
-    int dfs(int u, int sink, int pushed) {
-        if (u == sink) return pushed;
-        int start_idx = global_row_ptr[u];
-        int end_idx = global_row_ptr[u + 1];
-        for (size_t& i = ptr[u]; i < end_idx - start_idx; ++i) {
-            int idx = start_idx + i;
-            int v = global_col_idx[idx];
-            if (global_flows[idx] < global_capacities[idx] && global_level[v] == global_level[u] + 1) {
-                int tr = dfs(v, sink, min(pushed, global_capacities[idx] - global_flows[idx]));
-                if (tr > 0) {
-                    global_flows[idx] += tr;
-                    auto it = std::find(global_col_idx.begin() + global_row_ptr[v], global_col_idx.begin() + global_row_ptr[v + 1], u);
-                    // cout << "it == end" << (it == global_col_idx.begin() + global_row_ptr[v + 1]) << endl;
-                    // int rev_idx = global_row_ptr[v] + (it - global_col_idx.begin());
-                    int rev_idx = it - global_col_idx.begin();
-                    global_flows[rev_idx] -= tr;
-                    // cout << "rev flow: " << global_flows[rev_idx] << endl;
-                    return tr;
-                }
-            }
-        }
-        return 0;
-    }
+    // int dfs(int u, int sink, int pushed) {
+    //     if (u == sink) return pushed;
+    //     int start_idx = global_row_ptr[u];
+    //     int end_idx = global_row_ptr[u + 1];
+    //     for (size_t& i = ptr[u]; i < end_idx - start_idx; ++i) {
+    //         int idx = start_idx + i;
+    //         int v = global_col_idx[idx];
+    //         if (global_flows[idx] < global_capacities[idx] && global_level[v] == global_level[u] + 1) {
+    //             int tr = dfs(v, sink, min(pushed, global_capacities[idx] - global_flows[idx]));
+    //             if (tr > 0) {
+    //                 global_flows[idx] += tr;
+    //                 auto it = std::find(global_col_idx.begin() + global_row_ptr[v], global_col_idx.begin() + global_row_ptr[v + 1], u);
+    //                 // cout << "it == end" << (it == global_col_idx.begin() + global_row_ptr[v + 1]) << endl;
+    //                 // int rev_idx = global_row_ptr[v] + (it - global_col_idx.begin());
+    //                 int rev_idx = it - global_col_idx.begin();
+    //                 global_flows[rev_idx] -= tr;
+    //                 // cout << "rev flow: " << global_flows[rev_idx] << endl;
+    //                 return tr;
+    //             }
+    //         }
+    //     }
+    //     return 0;
+    // }
 
     // Max Flow computation using the parallelized BFS
     int maxFlow(int source, int sink) {
@@ -227,13 +323,13 @@ public:
         while (parallel_bfs(source, sink)) {
             if (rank == 0) {
                 fill(ptr.begin(), ptr.end(), 0);
-                while (int pushed = dfs(source, sink, INF)) {
-                    flow += pushed;
-                }
+                // while (int pushed = dfs(source, sink, INF)) {
+                //     flow += pushed;
+                // }
             }
             // MPI_Barrier(MPI_COMM_WORLD);
-            MPI_Scatterv(global_flows.data(), send_col_counts.data(), send_col_displs.data(), MPI_INT,
-                 local_flows.data(), local_col_count, MPI_INT, 0, MPI_COMM_WORLD);
+            // MPI_Scatterv(global_flows.data(), send_col_counts.data(), send_col_displs.data(), MPI_INT,
+            //      local_flows.data(), local_col_count, MPI_INT, 0, MPI_COMM_WORLD);
         }
         return flow;
     }
@@ -267,16 +363,16 @@ inline int fast_read_int() {
 void partition_vertices(int n, int rank, int size, int& local_n, int& local_m,
                         int& start_row, int& end_row, 
                         int& start_col, int& end_col) {
-    int base_vertices_col = n / P_COLUNM;
-    int remainder_col = n % P_COLUNM;
-    int base_vertices_row = n / (size / P_COLUNM);
-    int remainder_row = n % (size / P_COLUNM);
+    int base_vertices_col = (n + P_COLUMN - 1) / P_COLUMN;
+    // int remainder_col = n % P_COLUMN;
+    int base_vertices_row = (n + (size / P_COLUMN) - 1) / (size / P_COLUMN);
+    // int remainder_row = n % (size / P_COLUMN);
 
     // Partition vertices for 2D block distribution
-    start_row = (rank / P_COLUNM) * base_vertices_row + min(rank / P_COLUNM, remainder_row);
-    end_row = start_row + base_vertices_row + (rank / P_COLUNM < remainder_row);
-    start_col = (rank % P_COLUNM) * base_vertices_col + min(rank % P_COLUNM, remainder_col);
-    end_col = start_col + base_vertices_col + (rank % P_COLUNM < remainder_col);
+    start_row = (rank / P_COLUMN) * base_vertices_row;
+    end_row = min(n, start_row + base_vertices_row);
+    start_col = (rank % P_COLUMN) * base_vertices_col;
+    end_col = min(n, start_col + base_vertices_col);
     local_n = (end_row - start_row);
     local_m = (end_col - start_col);
 }
@@ -285,11 +381,11 @@ void partition_vertices(int n, int rank, int size, int& local_n, int& local_m,
 void scatter_adjacency_matrix(
     int n, int m, int rank, int size, 
     const std::vector<int>& global_block, 
-    std::vector<int>& local_block) {
+    std::vector<int>& local_block, int& local_n, int& local_m) {
 
-    P_COLUNM = min(P_COLUNM, size);
+    P_COLUMN = min(P_COLUMN, size);
 
-    int local_n, local_m, start_row, end_row, start_col, end_col;
+    int start_row, end_row, start_col, end_col;
 
     partition_vertices(n, rank, size, local_n, local_m, start_row, end_row, start_col, end_col);
     MPI_Datatype box_type;
@@ -411,35 +507,36 @@ int main(int argc, char* argv[]) {
     }
 
     std::vector<int> local_capacities;
+    int local_n, local_m;
 
-    scatter_adjacency_matrix(n, m, rank, nprocs, global_capacities, local_capacities);
+    scatter_adjacency_matrix(n, m, rank, nprocs, global_capacities, local_capacities, local_n, local_m);
 
     std::cout << "Process " << rank << " received block:\n";
     for (int i = 0; i < local_capacities.size(); ++i) {
-        std::cout << local_block[i] << " ";
+        std::cout << local_capacities[i] << " ";
     }
     cout << endl;
 
     dinic.initialize(
-        local_capacities, global_capacities
+        local_capacities, global_capacities, local_n, local_m
     );
 
     auto init_end = high_resolution_clock::now();
-    // double init_time = duration_cast<nanoseconds>(init_end - init_start).count();
-    // if (rank == 0) cout << "Initialization Time: " << init_time << " nanoseconds" << endl;
+    double init_time = duration_cast<nanoseconds>(init_end - init_start).count();
+    if (rank == 0) cout << "Initialization Time: " << init_time << " nanoseconds" << endl;
 
-    // auto comp_start = high_resolution_clock::now();
+    auto comp_start = high_resolution_clock::now();
 
-    // // Compute maximum flow using parallelized BFS
-    // int max_flow = dinic.maxFlow(source, sink);
+    // Compute maximum flow using parallelized BFS
+    int max_flow = dinic.maxFlow(source, sink);
 
-    // auto comp_end = high_resolution_clock::now();
-    // double comp_time = duration_cast<nanoseconds>(comp_end - comp_start).count();
+    auto comp_end = high_resolution_clock::now();
+    double comp_time = duration_cast<nanoseconds>(comp_end - comp_start).count();
 
-    // if (rank == 0) {
-    //     cout << "Computation Time: " << comp_time << " nanoseconds" << endl;
-    //     cout << "Maximum Flow: " << max_flow << endl;
-    // }
+    if (rank == 0) {
+        cout << "Computation Time: " << comp_time << " nanoseconds" << endl;
+        cout << "Maximum Flow: " << max_flow << endl;
+    }
 
     MPI_Finalize();
     return 0;
