@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cmath>
 #include <unordered_map>
+#include <numeric>
 using namespace std;
 using namespace std::chrono;
 
@@ -35,8 +36,6 @@ void scatter_adjacency_matrix(
     int n, int m, int rank, int size, 
     const std::vector<int>& global_block, 
     std::vector<int>& local_block, int& local_n, int& local_m) {
-
-    P_COLUMN = min(P_COLUMN, size);
 
     int start_row, end_row, start_col, end_col;
 
@@ -209,7 +208,15 @@ public:
             std::vector<int> send_displs_col(num_row, 0);
             std::vector<int> send_buffer_neighbors;
 
-            for (auto &[owner, neighbors] : neighbors_by_owner) {
+            // for (auto &[owner, neighbors] : neighbors_by_owner) {
+            for (int owner = 0; owner < nprocs; ++owner) {
+                // cout << "rank " << rank << " current owner: " << owner << " neighbors: ";
+                // for (int u : neighbors) {
+                //     cout << u << " ";
+                // }
+                // cout << endl;
+                vector<int> neighbors = neighbors_by_owner[owner];
+                if (neighbors.empty()) continue;
                 send_counts[owner] = neighbors.size();
                 send_counts_col[owner / P_COLUMN] = neighbors.size();
                 send_buffer_neighbors.insert(send_buffer_neighbors.end(), neighbors.begin(), neighbors.end());
@@ -245,7 +252,6 @@ public:
 
             // Prepare receive buffer
             std::vector<int> recv_buffer_neighbors(recv_total, -1);
-
             // Perform MPI_Alltoallv to send and receive neighbors
             MPI_Alltoallv(send_buffer_neighbors.data(), send_counts_col.data(), send_displs_col.data(), MPI_INT,
                         recv_buffer_neighbors.data(), recv_counts_col.data(), recv_displs_col.data(), MPI_INT,
@@ -289,6 +295,8 @@ public:
             MPI_Gather(reduced_level.data(), local_n, MPI_INT,
                         global_level.data(), local_n, MPI_INT, 0, col_comm);
         }
+
+        
 
         bool reachable;
 
@@ -364,6 +372,19 @@ inline int fast_read_int() {
     return x;
 }
 
+int round_n(int n, int nprocs) {
+    // find lcm or p_row and p_col
+    int lcm = (P_COLUMN / std::gcd(nprocs / P_COLUMN, P_COLUMN)) * nprocs / P_COLUMN;
+    return (n + lcm - 1) / lcm * lcm;
+}
+
+int roundToPowerOf2(int num) {
+    //return num == 0 ? 1 : 1 << (32 - __builtin_clz(num - 1) - 1);
+    if (num == 0) return 1;
+    if (num && !(num & (num - 1))) return num;
+    return 1 << (32 - __builtin_clz(num));
+}
+
 int main(int argc, char* argv[]) {
 
     auto init_start = high_resolution_clock::now();
@@ -386,6 +407,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    P_COLUMN = roundToPowerOf2(sqrt(nprocs));
+
     int n, m, source, sink;
     if (rank == 0) {
         // Read graph data
@@ -393,6 +416,7 @@ int main(int argc, char* argv[]) {
         m = fast_read_int();
         source = fast_read_int();
         sink = fast_read_int();
+        n = round_n(n, nprocs);
     }
 
     MPI_Bcast(&n, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -424,6 +448,14 @@ int main(int argc, char* argv[]) {
     int local_n, local_m;
 
     scatter_adjacency_matrix(n, m, rank, nprocs, global_capacities, local_capacities, local_n, local_m);
+
+    // cout << "Rank: " << rank << " received block" << endl;
+    // for (int i = 0; i < local_n; i++) {
+    //     for (int j = 0; j < local_m; j++) {
+    //         cout << local_capacities[i * local_m + j] << " ";
+    //     }
+    //     cout << endl;
+    // }
 
     dinic.initialize(
         local_capacities, global_capacities, local_n, local_m
